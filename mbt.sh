@@ -11,6 +11,7 @@
 #   -crontab-r, -crontab-reboot       Добавить в crontab автоперезапуск бота при загрузке
 #   -crontab-suc, -crontab-stop-unwanted-containers          Добавить в crontab остановку контейнеров после загрузки
 #   -bbr                     Подменю BBR (вкл/выкл)
+#   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
 #   -h, --help               Справка
 # =============================================================================
@@ -58,6 +59,7 @@ usage() {
   echo -e "  ${green}-crontab-reboot${plain}, ${green}-crontab-r${plain}   Добавить в crontab автоперезапуск бота при загрузке"
   echo -e "  ${green}-crontab-suc${plain}, ${green}-crontab-stop-unwanted-containers${plain}   Добавить в crontab остановку контейнеров после загрузки"
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
+  echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
 }
@@ -277,6 +279,67 @@ bbr_menu() {
   esac
 }
 
+# --- IPv6 (вкл/выкл) ---
+
+ipv6_disabled_now() {
+  [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null) == "1" ]]
+}
+
+enable_ipv6() {
+  check_root
+  if ! ipv6_disabled_now; then
+    LOGD "IPv6 уже включён."
+    before_show_menu
+    return
+  fi
+  rm -f /etc/sysctl.d/99-ipv6-mbt.conf
+  sysctl -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null
+  sysctl -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null
+  sysctl --system >/dev/null 2>&1
+  if ! ipv6_disabled_now; then
+    LOGI "IPv6 включён."
+  else
+    LOGE "Не удалось включить IPv6."
+  fi
+}
+
+disable_ipv6() {
+  check_root
+  if ipv6_disabled_now; then
+    LOGD "IPv6 уже отключён."
+    before_show_menu
+    return
+  fi
+  {
+    echo "net.ipv6.conf.all.disable_ipv6 = 1"
+    echo "net.ipv6.conf.default.disable_ipv6 = 1"
+  } > /etc/sysctl.d/99-ipv6-mbt.conf
+  sysctl -w net.ipv6.conf.all.disable_ipv6=1 2>/dev/null
+  sysctl -w net.ipv6.conf.default.disable_ipv6=1 2>/dev/null
+  sysctl --system >/dev/null 2>&1
+  if ipv6_disabled_now; then
+    LOGI "IPv6 отключён."
+  else
+    LOGE "Не удалось отключить IPv6."
+  fi
+}
+
+ipv6_menu() {
+  echo ""
+  echo -e "${green}  IPv6${plain}"
+  echo -e "  ${blue}1.${plain} Включить IPv6"
+  echo -e "  ${blue}2.${plain} Отключить IPv6"
+  echo -e "  ${blue}0.${plain} Назад в главное меню"
+  echo -n "Выберите [0-2]: "
+  read -r choice
+  case "$choice" in
+    1) enable_ipv6; before_show_menu ;;
+    2) disable_ipv6; before_show_menu ;;
+    0) show_menu ;;
+    *) LOGE "Неверный выбор."; ipv6_menu ;;
+  esac
+}
+
 # --- Fail2ban (защита SSH от брутфорса) ---
 
 install_fail2ban_ssh() {
@@ -370,10 +433,11 @@ show_menu() {
     echo -e "  ${blue}4.${plain} Автоперезапуск бота при загрузке (вкл/выкл)"
     echo -e "  ${blue}5.${plain} Остановка контейнеров после загрузки (вкл/выкл)"
     echo -e "  ${blue}6.${plain} BBR (вкл/выкл)"
-    echo -e "  ${blue}7.${plain} Fail2ban (защита SSH)"
+    echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
+    echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
     echo -e "  ${blue}0.${plain} Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
-    echo -n "Выберите действие [0-7]: "
+    echo -n "Выберите действие [0-8]: "
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
@@ -382,7 +446,8 @@ show_menu() {
       4) crontab_menu_reboot_restart ;;
       5) crontab_menu_stop_containers ;;
       6) bbr_menu ;;
-      7) f2b_menu ;;
+      7) ipv6_menu ;;
+      8) f2b_menu ;;
       0) LOGI "Выход."; exit 0 ;;
       "") ;;   # пустой ввод — показать меню снова
       *) LOGE "Неверный выбор." ;;
@@ -426,6 +491,9 @@ case "${cmd#--}" in
     ;;
   -bbr)
     bbr_menu
+    ;;
+  -ipv6)
+    ipv6_menu
     ;;
   -f2b|-fail2ban)
     f2b_menu

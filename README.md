@@ -18,5 +18,6 @@ wget -qO mbt.sh https://raw.githubusercontent.com/ang3el7z/setup-bot/master/mbt.
 | `-crontab-r`, `-crontab-reboot` | Добавить в crontab автоперезапуск бота при загрузке |
 | `-crontab-suc`, `-crontab-stop-unwanted-containers` | Добавить в crontab остановку контейнеров после загрузки |
 | `-bbr` | Подменю BBR (вкл/выкл) |
+| `-ipv6` | Подменю IPv6 (вкл/выкл) |
 | `-f2b`, `-fail2ban` | Подменю Fail2ban (защита SSH) |
 | `-h`, `--help` | Справка |
