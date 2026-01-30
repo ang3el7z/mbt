@@ -3,4 +3,8 @@
 set -e
 wget -qO /usr/local/bin/mbt https://raw.githubusercontent.com/ang3el7z/setup-bot/master/scripts/mbt.sh
 chmod +x /usr/local/bin/mbt
-exec mbt "$@"
+if [ -e /dev/tty ]; then
+  exec mbt "$@" < /dev/tty
+else
+  echo "Установлено. Запустите: mbt"
+fi
