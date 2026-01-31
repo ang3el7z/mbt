@@ -13,7 +13,7 @@
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
-#   -sub                     Внедрить verifyUser в бота (получать подписку от бота)
+#   -sub                     Подменить app/bot.php на сервере файлом из репо (app/bot.php)
 #   -all                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)
 #   -h, --help               Справка
 # =============================================================================
@@ -64,7 +64,7 @@ usage() {
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
-  echo -e "  ${green}-sub${plain}                     Внедрить verifyUser в бота (получать подписку от бота)"
+  echo -e "  ${green}-sub${plain}                     Подменить app/bot.php на сервере файлом из репо (app/bot.php)"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
 }
@@ -409,307 +409,26 @@ f2b_menu() {
   esac
 }
 
-# --- Sub: внедрить verifyUser в бота (получать подписку от бота) ---
+# --- Sub: подменить app/bot.php на сервере файлом из репо (app/bot.php) ---
 
 run_sub() {
-  local app_dir="$VPNBOT_DIR/app"
-  local bot_php="$app_dir/bot.php"
-  local snippet_tmp
-  snippet_tmp=$(mktemp)
-  trap 'rm -f "$snippet_tmp"' RETURN
-
-  if [[ ! -f "$bot_php" ]]; then
-    LOGE "Не найден: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  local prepared
+  if [[ -n "${PREPARED_BOT_FILE:-}" && -f "${PREPARED_BOT_FILE}" ]]; then
+    prepared="${PREPARED_BOT_FILE}"
+  elif [[ -f "$repo_root/app/bot.php" ]]; then
+    prepared="$repo_root/app/bot.php"
+  else
+    LOGE "Не найден подготовленный файл: $repo_root/app/bot.php"
     return 1
   fi
-
-  if grep -q "you are not authorized" "$bot_php"; then
-    LOGI "Заменяю комментарий в auth() на \$this->verifyUser(); ..."
-    sed -i '/you are not authorized/s/.*/        $this->verifyUser();/' "$bot_php"
-  fi
-  auth_start=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
-  auth_has_patch=0
-  if [[ -n "$auth_start" ]]; then
-    auth_block=$(sed -n "${auth_start},$((auth_start + 25))p" "$bot_php")
-    echo "$auth_block" | grep -q "preg_match.*verifySub" && auth_has_patch=1
-  fi
-  if grep -q '\$this->verifyUser();' "$bot_php" && [[ "$auth_has_patch" -eq 0 ]]; then
-    LOGI "Правка auth(): разрешаю callback /verifySub (иначе при нажатии кнопок шло бы новое сообщение) ..."
-    awk '
-      /^\s+\$this->verifyUser\(\);?\s*$/ {
-        if (match($0, /^[ \t]+/)) { sp = substr($0, RSTART, RLENGTH) } else { sp = "        " }
-        print sp "if (preg_match('\''~^/verifySub~'\'', $this->input['\''callback'\''] ?? '\'''\'')) {"
-        print sp "} else {"
-        print sp "    $this->verifyUser();"
-        print sp "    exit;"
-        print sp "}"
-        done = 1
-        next
-      }
-      done && /^\s+exit;\s*$/ { done = 0; next }
-      { print }
-    ' "$bot_php" > "$bot_php.awked" && mv "$bot_php.awked" "$bot_php"
-  fi
-  if ! grep -q "case preg_match.*verifySub" "$bot_php"; then
-    LOGI "Добавляю обработчик callback /verifySub в action() ..."
-    case_line=$(grep -n "case preg_match.*menu.*message" "$bot_php" | head -1 | cut -d: -f1)
-    if [[ -n "$case_line" ]]; then
-      {
-        head -n $((case_line - 1)) "$bot_php"
-        echo "            case preg_match('~^/verifySub(?:\s+(?P<arg>.+))?\$~', \$this->input['callback'], \$m):"
-        echo "                \$this->verifyUserCallback(\$m['arg'] ?? 'list');"
-        echo "                break;"
-        tail -n +"$case_line" "$bot_php"
-      } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
-    fi
-  fi
-
-  cat << 'VERIFYUSER_SNIPPET_END' > "$snippet_tmp"
-    private function verifyUserGetFoundIndexes(): array
-    {
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $foundIndexes = [];
-        foreach ($clients as $i => $user) {
-            if (isset($user['email']) && preg_match('/\[tg_(\d+)]/i', $user['email'], $m) && (string)$m[1] === (string)$this->input['from']) {
-                $foundIndexes[] = $i;
-            }
-        }
-        return $foundIndexes;
-    }
-
-    private function verifyUserTrafficLine(int $clientIndex): string
-    {
-        try {
-            $st = $this->getXrayStats();
-            if (empty($st['users'][$clientIndex])) {
-                return '';
-            }
-            $u = $st['users'][$clientIndex];
-            $down = ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0);
-            $up   = ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
-            return "📊 <b>Трафик:</b> ↓ " . $this->getBytes($down) . "  ·  ↑ " . $this->getBytes($up);
-        } catch (\Throwable $e) {
-            return '';
-        }
-    }
-
-    private function verifyUserConfigText(int $index): string
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (!isset($foundIndexes[$index])) {
-            return '';
-        }
-        $esc = fn(string $s) => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $clientIdx = $foundIndexes[$index];
-        $c = $clients[$clientIdx];
-        $email = $c['email'];
-        $pac = $this->getPacConf();
-        $domain = $this->getDomain($pac['transport'] != 'Reality');
-        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
-        $hash = $this->getHashBot();
-        $siPayload = base64_encode(serialize(['h' => $hash, 't' => 'si', 's' => $c['id']]));
-        $si = "{$scheme}://{$domain}/pac{$hash}/{$siPayload}";
-        $importUrl = "{$scheme}://{$domain}/pac{$hash}?t=si&r=si&s={$c['id']}#" . rawurlencode($email);
-        $windowsUrl = "{$scheme}://{$domain}/pac{$hash}?t=si&r=w&s={$c['id']}";
-        $emailLower = strtolower($email);
-        $isOpenWrt = str_contains($emailLower, '[openwrt]');
-        $isWindows = str_contains($emailLower, '[windows]');
-        $isTablet = str_contains($emailLower, '[tablet]');
-        $isMac = str_contains($emailLower, '[mac]');
-        $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($index + 1);
-        $trafficLine = $this->verifyUserTrafficLine($clientIdx);
-        $lines = [];
-        $lines[] = "👤 <b>Профиль:</b> <code>{$esc($cleanName)}</code>";
-        if ($trafficLine !== '') {
-            $lines[] = $trafficLine;
-        }
-        $lines[] = "";
-        $lines[] = "━━━ <b>Инструкция по устройству</b> ━━━";
-        $lines[] = "";
-        if ($isOpenWrt) {
-            $lines[] = "📡 <b>Роутер (OpenWRT)</b>";
-            $lines[] = "• Установите: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">luci-app-singbox-ui</a>";
-            $lines[] = "• Конфиг-сервер:";
-            $lines[] = "<code>{$esc($si)}</code>";
-        } elseif ($isWindows) {
-            $lines[] = "🖥 <b>Windows 10/11</b>";
-            $lines[] = "• Скачать: <a href=\"{$esc($windowsUrl)}\">sing-box для Windows</a>";
-            $lines[] = "• Распаковать в <code>C:\\serviceBot</code> (путь только латиницей)";
-            $lines[] = "• Запустить <code>install</code>, затем <code>start</code>";
-            $lines[] = "• Проверка: <code>status</code>";
-        } elseif ($isTablet) {
-            $lines[] = "📱 <b>Планшет (Android / iOS)</b>";
-            $lines[] = "• Установить sing-box: Play Store / App Store";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        } elseif ($isMac) {
-            $lines[] = "💻 <b>Mac</b>";
-            $lines[] = "• Установить sing-box (App Store)";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        } else {
-            $lines[] = "📱 <b>Телефон (Android / iOS)</b>";
-            $lines[] = "• Установить sing-box: Play Store / App Store";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        }
-        $lines[] = "";
-        $lines[] = "🔒 <b>Ограничения</b>";
-        $lines[] = "• Один конфиг — одно устройство";
-        $lines[] = "• Передача конфига посторонним — <b>бан навсегда</b>";
-        $lines[] = "• Не использовать на нескольких устройствах одновременно";
-        $lines[] = "";
-        $lines[] = "⚠️ Нажмите кнопку <b>Обновить</b> ниже для актуальной конфигурации.";
-        return implode("\n", $lines);
-    }
-
-    private function verifyUserListData(): array
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (empty($foundIndexes)) {
-            return ['text' => '', 'keyboard' => []];
-        }
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $rows = [];
-        foreach ($foundIndexes as $i => $idx) {
-            $email = $clients[$idx]['email'] ?? '';
-            $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($i + 1);
-            $rows[] = [['text' => $cleanName, 'callback_data' => "/verifySub $i"]];
-        }
-        $header = "📋 <b>Ваши профили</b>\n\nВыберите профиль — откроется инструкция и ссылки для подключения.";
-        return ['text' => $header, 'keyboard' => $rows];
-    }
-
-    public function verifyUser(): void
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (empty($foundIndexes)) {
-            return;
-        }
-        try {
-            if (count($foundIndexes) === 1) {
-                $text = $this->verifyUserConfigText(0);
-                $keyboard = [[['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']]];
-                $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, true);
-            } else {
-                $list = $this->verifyUserListData();
-                $this->send($this->input['chat'], $list['text'], 0, $list['keyboard'], false, 'HTML', false, true);
-            }
-        } catch (\Throwable $e) {
-            $this->send($this->input['chat'], "verifyUser: " . $e->getMessage(), $this->input['message_id']);
-        }
-    }
-
-    public function verifyUserCallback(?string $arg): void
-    {
-        $cid = $this->input['callback_id'] ?? null;
-        $answer = function ($msg = null) use ($cid) {
-            if ($cid !== null) {
-                $this->answer($cid, $msg);
-            }
-        };
-        try {
-            $foundIndexes = $this->verifyUserGetFoundIndexes();
-            if (empty($foundIndexes)) {
-                $answer('Нет конфигов.');
-                return;
-            }
-            $chat = $this->input['chat'];
-            $messageId = (int) $this->input['message_id'];
-            $arg = trim((string)$arg);
-            if ($arg === 'list' || $arg === '') {
-                $list = $this->verifyUserListData();
-                $text = $list['text'] ?: '📋 Ваши профили';
-                if (mb_strlen($text, 'UTF-8') > 4096) {
-                    $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
-                }
-                $this->update($chat, $messageId, $text, $list['keyboard']);
-                $answer();
-                return;
-            }
-            if (preg_match('/^refresh(?:\s+(\d+))?$/', $arg, $m)) {
-                $index = isset($m[1]) ? (int)$m[1] : 0;
-                if (!isset($foundIndexes[$index])) {
-                    $index = 0;
-                }
-            } elseif (preg_match('/^\d+$/', $arg)) {
-                $index = (int)$arg;
-                if (!isset($foundIndexes[$index])) {
-                    $index = 0;
-                }
-            } else {
-                $answer();
-                return;
-            }
-            $text = $this->verifyUserConfigText($index);
-            if ($text === '') {
-                $text = '👤 Профиль #' . ($index + 1) . "\n\nНет данных.";
-            }
-            if (mb_strlen($text, 'UTF-8') > 4096) {
-                $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
-            }
-            $keyboard = [];
-            if (count($foundIndexes) > 1) {
-                $keyboard[] = [['text' => "← Назад", 'callback_data' => '/verifySub list'], ['text' => "🔄 Обновить", 'callback_data' => "/verifySub refresh $index"]];
-            } else {
-                $keyboard[] = [['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']];
-            }
-            $r = $this->update($chat, $messageId, $text, $keyboard);
-            $answer();
-            if (!empty($r['ok']) && $r['ok'] === true) {
-                return;
-            }
-            if (!empty($r['description']) && (stripos($r['description'], 'not modified') !== false || stripos($r['description'], 'message is the same') !== false)) {
-                return;
-            }
-            $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, true);
-        } catch (\Throwable $e) {
-            $answer('Ошибка');
-            $this->send($this->input['chat'], "Ошибка: " . $e->getMessage(), $this->input['message_id']);
-        }
-    }
-VERIFYUSER_SNIPPET_END
-
-  if ! grep -q "function verifyUser()" "$bot_php"; then
-    LOGI "Вставляю методы verifyUser и verifyUserCallback после auth() ..."
-    auth_line=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
-    if [[ -z "$auth_line" ]]; then
-      LOGE "В bot.php не найдена функция public function auth()."
-      return 1
-    fi
-    next_func_line=$(awk -v start="$auth_line" 'NR > start && /^[[:space:]]*public function / { print NR; exit }' "$bot_php")
-    if [[ -z "$next_func_line" ]]; then
-      LOGE "Не найден конец auth() (следующая public function)."
-      return 1
-    fi
-    {
-      head -n $((next_func_line - 1)) "$bot_php"
-      cat "$snippet_tmp"
-      echo ""
-      tail -n +"$next_func_line" "$bot_php"
-    } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
-  elif ! grep -q "verifyUserCallback" "$bot_php"; then
-    LOGI "Обновляю старый блок verifyUser (кнопка Обновить будет редактировать сообщение, а не отправлять новое) ..."
-    start_line=$(grep -n "private function verifyUserGetFoundIndexes\|public function verifyUser()" "$bot_php" | head -1 | cut -d: -f1)
-    next_method_line=$(awk -v start="$start_line" 'NR > start && /^    (public|private) function / { print NR; exit }' "$bot_php")
-    if [[ -n "$start_line" && -n "$next_method_line" ]]; then
-      end_line=$((next_method_line - 1))
-      {
-        head -n $((start_line - 1)) "$bot_php"
-        cat "$snippet_tmp"
-        echo ""
-        tail -n +$((end_line + 1)) "$bot_php"
-      } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
-      LOGI "Блок verifyUser заменён на новую версию."
-    else
-      LOGE "Не удалось найти границы блока verifyUser для замены."
-    fi
-  else
-    LOGD "Методы verifyUser/verifyUserCallback уже есть в bot.php."
-  fi
-
-  LOGI "Sub (verifyUser) применён. Перезапустите бота при необходимости (п. 1)."
+  local app_dir="$VPNBOT_DIR/app"
+  local bot_php="$app_dir/bot.php"
+  mkdir -p "$app_dir"
+  LOGI "Подменяю $bot_php на $(basename "$prepared") ..."
+  cp "$prepared" "$bot_php" || { LOGE "Не удалось скопировать файл."; return 1; }
+  LOGI "bot.php подменён. Перезапустите бота при необходимости (п. 1)."
 }
 
 # --- Все в одном ---
@@ -773,7 +492,7 @@ show_menu() {
     echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
     echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
     echo -e "  ${blue}9.${plain}  Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
-    echo -e "  ${blue}10.${plain} Получать подписку от бота"
+    echo -e "  ${blue}10.${plain} Подменить app/bot.php на сервере (из репо app/bot.php)"
     echo -e "  ${blue}0.${plain}  Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
     echo -n "Выберите действие [0-10]: "
