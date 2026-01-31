@@ -13,7 +13,7 @@
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
-#   -sub                     Внедрить verifyUser в бота (скрытый пункт для подписчиков)
+#   -sub                     Внедрить verifyUser в бота (получать подписку от бота)
 #   -all                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)
 #   -h, --help               Справка
 # =============================================================================
@@ -64,7 +64,7 @@ usage() {
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
-  echo -e "  ${green}-sub${plain}                     Внедрить verifyUser в бота (скрытый пункт для подписчиков)"
+  echo -e "  ${green}-sub${plain}                     Внедрить verifyUser в бота (получать подписку от бота)"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
 }
@@ -409,7 +409,7 @@ f2b_menu() {
   esac
 }
 
-# --- Sub: внедрить verifyUser в бота (скрытый пункт для подписчиков) ---
+# --- Sub: внедрить verifyUser в бота (получать подписку от бота) ---
 
 run_sub() {
   local app_dir="$VPNBOT_DIR/app"
@@ -661,11 +661,11 @@ show_menu() {
     echo -e "  ${blue}6.${plain} BBR (вкл/выкл)"
     echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
     echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
-    echo -e "  ${blue}99.${plain} Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
-    echo -e "  ${blue}sub.${plain} Sub — внедрить verifyUser в бота (скрытый пункт для подписчиков)"
-    echo -e "  ${blue}0.${plain} Выход"
+    echo -e "  ${blue}9.${plain}  Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
+    echo -e "  ${blue}10.${plain} Получать подписку от бота"
+    echo -e "  ${blue}0.${plain}  Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
-    echo -n "Выберите действие [0-8, 99, sub]: "
+    echo -n "Выберите действие [0-10]: "
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
@@ -676,8 +676,8 @@ show_menu() {
       6) bbr_menu ;;
       7) ipv6_menu ;;
       8) f2b_menu ;;
-      99) run_all_in_one ;;
-      sub) run_sub; prompt_back_or_exit || exit 0 ;;
+      9) run_all_in_one ;;
+      10) run_sub; prompt_back_or_exit || exit 0 ;;
       0) LOGI "Выход."; exit 0 ;;
       "") ;;   # пустой ввод — показать меню снова
       *) LOGE "Неверный выбор." ;;
