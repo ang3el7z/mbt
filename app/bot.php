@@ -92,6 +92,8 @@ class Bot
             $c['admin'] = [$c['admin']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         } elseif (!in_array($this->input['from'], $c['admin'])) {
+            // [MBT] Добавлено: для не-админа разрешаем callback /verifySub проходить в action(),
+            // иначе при нажатии кнопок «Назад»/«Обновить»/выбор профиля вызывался бы только verifyUser() и exit.
             if (preg_match('~^/verifySub~', $this->input['callback'] ?? '')) {
                 // callback от кнопок подписки — обработает action() -> verifyUserCallback()
             } else {
@@ -101,6 +103,9 @@ class Bot
         }
     }
 
+    // [MBT] Добавлено: блок методов для выдачи подписки не-админам (список профилей, конфиг, кнопки).
+
+    /** [MBT] Индексы клиентов xray, у которых email содержит [tg_<from_id>] — конфиги этого пользователя. */
     private function verifyUserGetFoundIndexes(): array
     {
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
@@ -113,6 +118,7 @@ class Bot
         return $foundIndexes;
     }
 
+    /** [MBT] Строка с трафиком (↓/↑) для одного клиента по индексу. */
     private function verifyUserTrafficLine(int $clientIndex): string
     {
         try {
@@ -129,6 +135,7 @@ class Bot
         }
     }
 
+    /** [MBT] Текст карточки профиля: имя, трафик, инструкция по устройству (OpenWRT/Windows/телефон и т.д.), ограничения. */
     private function verifyUserConfigText(int $index): string
     {
         $foundIndexes = $this->verifyUserGetFoundIndexes();
@@ -200,6 +207,7 @@ class Bot
         return implode("\n", $lines);
     }
 
+    /** [MBT] Данные для экрана списка профилей: текст и кнопки с callback_data /verifySub N. */
     private function verifyUserListData(): array
     {
         $foundIndexes = $this->verifyUserGetFoundIndexes();
@@ -217,6 +225,7 @@ class Bot
         return ['text' => $header, 'keyboard' => $rows];
     }
 
+    /** [MBT] Точка входа для не-админа: один профиль — сразу конфиг, несколько — список кнопок. */
     public function verifyUser(): void
     {
         $foundIndexes = $this->verifyUserGetFoundIndexes();
@@ -237,6 +246,7 @@ class Bot
         }
     }
 
+    /** [MBT] Обработка нажатий кнопок подписки: список (list), выбор профиля (N), обновить (refresh), редактирование сообщения через update(). */
     public function verifyUserCallback(?string $arg): void
     {
         $cid = $this->input['callback_id'] ?? null;
@@ -345,7 +355,7 @@ class Bot
     public function action()
     {
         switch (true) {
-            // смена айпи сервера
+            // [MBT] Добавлено: маршрут callback /verifySub (кнопки подписки) в verifyUserCallback().
             case preg_match('~^/verifySub(?:\s+(?P<arg>.+))?$~', $this->input['callback'], $m):
                 $this->verifyUserCallback($m['arg'] ?? 'list');
                 break;
