@@ -457,7 +457,7 @@ run_sub() {
       /elseif[[:space:]]*\([[:space:]]*!in_array\(.*admin.*\).*\{[[:space:]]*$/ {
         print
         getline
-        while ($0 !~ /^\s+\}\s*$/) { if (getline <= 0) break }
+        while ($0 !~ /^\s*\}\s*$/) { if (getline <= 0) break }
         print "            // [MBT] Подписка: callback /verifySub обрабатывает action(); иначе — показываем подписку и выходим."
         print "            if (preg_match('\''~^/verifySub~'\'', \\$this->input['\''callback'\''] ?? '\'''\'')) {"
         print "                return;"
