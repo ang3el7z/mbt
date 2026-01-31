@@ -427,7 +427,13 @@ run_sub() {
     LOGI "Заменяю комментарий в auth() на \$this->verifyUser(); ..."
     sed -i '/you are not authorized/s/.*/        $this->verifyUser();/' "$bot_php"
   fi
-  if grep -q '\$this->verifyUser();' "$bot_php" && ! grep -q "preg_match.*verifySub" "$bot_php"; then
+  auth_start=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
+  auth_has_patch=0
+  if [[ -n "$auth_start" ]]; then
+    auth_block=$(sed -n "${auth_start},$((auth_start + 25))p" "$bot_php")
+    echo "$auth_block" | grep -q "preg_match.*verifySub" && auth_has_patch=1
+  fi
+  if grep -q '\$this->verifyUser();' "$bot_php" && [[ "$auth_has_patch" -eq 0 ]]; then
     LOGI "Правка auth(): разрешаю callback /verifySub (иначе при нажатии кнопок шло бы новое сообщение) ..."
     awk '
       /^\s+\$this->verifyUser\(\);?\s*$/ {
@@ -520,6 +526,7 @@ run_sub() {
         }
         $lines[] = "";
         $lines[] = "━━━ <b>Инструкция по устройству</b> ━━━";
+        $lines[] = "";
         if ($isOpenWrt) {
             $lines[] = "📡 <b>Роутер (OpenWRT)</b>";
             $lines[] = "• Установите: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">luci-app-singbox-ui</a>";
@@ -596,46 +603,74 @@ run_sub() {
 
     public function verifyUserCallback(?string $arg): void
     {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (empty($foundIndexes)) {
-            $this->answer($this->input['callback_id'], 'Нет конфигов.');
-            return;
-        }
-        $chat = $this->input['chat'];
-        $messageId = $this->input['message_id'];
-        $arg = trim((string)$arg);
-        if ($arg === 'list' || $arg === '') {
-            $list = $this->verifyUserListData();
-            $this->update($chat, $messageId, $list['text'], $list['keyboard']);
-            $this->answer($this->input['callback_id']);
-            return;
-        }
-        if (preg_match('/^refresh(?:\s+(\d+))?$/', $arg, $m)) {
-            $index = isset($m[1]) ? (int)$m[1] : 0;
-            if (!isset($foundIndexes[$index])) {
-                $index = 0;
+        $cid = $this->input['callback_id'] ?? null;
+        $answer = function ($msg = null) use ($cid) {
+            if ($cid !== null) {
+                $this->answer($cid, $msg);
             }
-        } elseif (ctype_digit($arg)) {
-            $index = (int)$arg;
-            if (!isset($foundIndexes[$index])) {
-                $index = 0;
+        };
+        try {
+            $foundIndexes = $this->verifyUserGetFoundIndexes();
+            if (empty($foundIndexes)) {
+                $answer('Нет конфигов.');
+                return;
             }
-        } else {
-            return;
+            $chat = $this->input['chat'];
+            $messageId = (int) $this->input['message_id'];
+            $arg = trim((string)$arg);
+            if ($arg === 'list' || $arg === '') {
+                $list = $this->verifyUserListData();
+                $text = $list['text'] ?: '📋 Ваши профили';
+                if (mb_strlen($text, 'UTF-8') > 4096) {
+                    $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
+                }
+                $this->update($chat, $messageId, $text, $list['keyboard']);
+                $answer();
+                return;
+            }
+            if (preg_match('/^refresh(?:\s+(\d+))?$/', $arg, $m)) {
+                $index = isset($m[1]) ? (int)$m[1] : 0;
+                if (!isset($foundIndexes[$index])) {
+                    $index = 0;
+                }
+            } elseif (preg_match('/^\d+$/', $arg)) {
+                $index = (int)$arg;
+                if (!isset($foundIndexes[$index])) {
+                    $index = 0;
+                }
+            } else {
+                $answer();
+                return;
+            }
+            $text = $this->verifyUserConfigText($index);
+            if ($text === '') {
+                $text = '👤 Профиль #' . ($index + 1) . "\n\nНет данных.";
+            }
+            if (mb_strlen($text, 'UTF-8') > 4096) {
+                $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
+            }
+            $keyboard = [];
+            if (count($foundIndexes) > 1) {
+                $keyboard[] = [['text' => "← Назад", 'callback_data' => '/verifySub list'], ['text' => "🔄 Обновить", 'callback_data' => "/verifySub refresh $index"]];
+            } else {
+                $keyboard[] = [['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']];
+            }
+            $r = $this->update($chat, $messageId, $text, $keyboard);
+            $answer();
+            if (!empty($r['ok']) && $r['ok'] === true) {
+                return;
+            }
+            if (!empty($r['description']) && (stripos($r['description'], 'not modified') !== false || stripos($r['description'], 'message is the same') !== false)) {
+                return;
+            }
+            $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, true);
+        } catch (\Throwable $e) {
+            $answer('Ошибка');
+            $this->send($this->input['chat'], "Ошибка: " . $e->getMessage(), $this->input['message_id']);
         }
-        $text = $this->verifyUserConfigText($index);
-        $keyboard = [];
-        if (count($foundIndexes) > 1) {
-            $keyboard[] = [['text' => "← Назад", 'callback_data' => '/verifySub list'], ['text' => "🔄 Обновить", 'callback_data' => "/verifySub refresh $index"]];
-        } else {
-            $keyboard[] = [['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']];
-        }
-        $this->update($chat, $messageId, $text, $keyboard);
-        $this->answer($this->input['callback_id']);
     }
 VERIFYUSER_SNIPPET_END
 
-    LOGI "Version 3 ..."
   if ! grep -q "function verifyUser()" "$bot_php"; then
     LOGI "Вставляю методы verifyUser и verifyUserCallback после auth() ..."
     auth_line=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
