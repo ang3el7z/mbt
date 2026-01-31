@@ -13,6 +13,7 @@
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
+#   -sub                     Внедрить verifyUser в бота (скрытый пункт для подписчиков)
 #   -all                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)
 #   -h, --help               Справка
 # =============================================================================
@@ -63,6 +64,7 @@ usage() {
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
+  echo -e "  ${green}-sub${plain}                     Внедрить verifyUser в бота (скрытый пункт для подписчиков)"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
 }
@@ -407,6 +409,190 @@ f2b_menu() {
   esac
 }
 
+# --- Sub: внедрить verifyUser в бота (скрытый пункт для подписчиков) ---
+
+run_sub() {
+  local app_dir="$VPNBOT_DIR/app"
+  local bot_php="$app_dir/bot.php"
+  local snippet_tmp
+  snippet_tmp=$(mktemp)
+  trap 'rm -f "$snippet_tmp"' RETURN
+
+  if [[ ! -f "$bot_php" ]]; then
+    LOGE "Не найден: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
+    return 1
+  fi
+
+  if grep -q "you are not authorized" "$bot_php"; then
+    LOGI "Заменяю комментарий в auth() на \$this->verifyUser(); ..."
+    sed -i '/you are not authorized/s/.*/        $this->verifyUser();/' "$bot_php"
+  else
+    LOGD "auth() уже вызывает verifyUser или строка не найдена."
+  fi
+
+  if ! grep -q "function verifyUser()" "$bot_php"; then
+    LOGI "Вставляю метод verifyUser() после auth() ..."
+    cat << 'VERIFYUSER_SNIPPET_END' > "$snippet_tmp"
+    public function verifyUser(): void
+    {
+        $esc = fn(string $s) => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
+
+        $foundIndexes = [];
+        foreach ($clients as $i => $user) {
+            if (
+                isset($user['email']) &&
+                preg_match('/\[tg_(\d+)]/i', $user['email'], $m) &&
+                (string)$m[1] === (string)$this->input['from']
+            ) {
+                $foundIndexes[] = $i;
+            }
+        }
+
+        if (empty($foundIndexes)) {
+            return;
+        }
+
+        $this->send($this->input['chat'], "verifyUser: найдено совпадений: " . count($foundIndexes) . " → [" . implode(',', $foundIndexes) . "]", $this->input['message_id']);
+
+        $pac    = $this->getPacConf();
+        $domain = $this->getDomain($pac['transport'] != 'Reality');
+        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
+        $hash   = $this->getHashBot();
+
+        $messageParts = [];
+
+        foreach ($foundIndexes as $index) {
+            $c     = $clients[$index];
+            $email = $c['email'];
+
+            $siPayload = base64_encode(serialize([
+                'h' => $hash,
+                't' => 'si',
+                's' => $c['id'],
+            ]));
+            $si = "{$scheme}://{$domain}/pac{$hash}/{$siPayload}";
+
+            $importUrl  = "{$scheme}://{$domain}/pac{$hash}?t=si&r=si&s={$c['id']}#" . rawurlencode($email);
+            $windowsUrl = "{$scheme}://{$domain}/pac{$hash}?t=si&r=w&s={$c['id']}";
+
+            $emailLower = strtolower($email);
+            $isOpenWrt  = str_contains($emailLower, '[openwrt]');
+            $isWindows  = str_contains($emailLower, '[windows]');
+            $isTablet   = str_contains($emailLower, '[tablet]');
+            $isMac      = str_contains($emailLower, '[mac]');
+
+            $textParts = [];
+
+            $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email);
+            $textParts[] = "🧾 <b>Конфиг для:</b> <code>{$esc($cleanName)}</code>";
+
+            if ($isOpenWrt) {
+                $textParts[] =
+                    "📡 <b>Роутер (OpenWRT)</b>\n"
+                    . "⚠️ Только для OpenWRT.\n"
+                    . "1. Установите интерфейс: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">GitHub</a>\n"
+                    . "2. Используйте следующий конфиг-сервер:\n"
+                    . "<pre><code>{$esc($si)}</code></pre>\n"
+                    . "✅ Подходит для ручного импорта.";
+            } elseif ($isWindows) {
+                $textParts[] =
+                    "🖥 <b>Windows</b>\n"
+                    . "⚠️ Только для Windows 10/11.\n"
+                    . "1. Скачайте клиент: <a href=\"{$esc($windowsUrl)}\">sing-box для Windows</a>\n"
+                    . "2. Распакуйте, например, в <code>C:\\serviceBot</code> ⚠️ <i>Имя пути только на англ.!</i>\n"
+                    . "3. Запустите <code>install</code>, затем <code>start</code>.\n"
+                    . "4. Проверка подключения: выполните <code>status</code>\n"
+                    . "✅ Работает автоматически, включая при перезагрузке.";
+            } elseif ($isTablet) {
+                $textParts[] =
+                    "📱 <b>Планшет (Android / iOS)</b>\n"
+                    . "⚠️ Только для Android / iOS.\n"
+                    . "1. Установите приложение <b>sing-box</b>:\n"
+                    . "• <a href=\"https://play.google.com/store/apps/details?id=io.nekohasekai.sfa&hl=ru&pli=1\">Play Store</a>\n"
+                    . "• <a href=\"https://apps.apple.com/ru/app/sing-box-vt/id6673731168?l=en-ru\">App Store</a>\n"
+                    . "2. Перейдите по ссылке: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n"
+                    . "3. Нажмите <b>Import</b> → <b>Create</b>.\n"
+                    . "4. Перейдите в <b>Dashboard</b> и нажмите <b>Start</b>.\n"
+                    . "✅ Всё готово для использования.";
+            } elseif ($isMac) {
+                $textParts[] =
+                    "💻 <b>Mac</b>\n"
+                    . "1. Установите приложение <b>sing-box</b>\n"
+                    . "• <a href=\"https://apps.apple.com/ru/app/sing-box-vt/id6673731168?l=en-ru\">App Store</a>\n"
+                    . "2. Перейдите по ссылке: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n"
+                    . "3. Нажмите <b>Import</b> → <b>Create</b>.\n"
+                    . "4. Перейдите в <b>Dashboard</b> и нажмите <b>Start</b>.\n"
+                    . "✅ Всё готово для использования.";
+            } else {
+                $textParts[] =
+                    "📱 <b>Телефон (Android / iOS)</b>\n"
+                    . "1. Установите приложение <b>sing-box</b>:\n"
+                    . "• <a href=\"https://play.google.com/store/apps/details?id=io.nekohasekai.sfa&hl=ru&pli=1\">Play Store</a>\n"
+                    . "• <a href=\"https://apps.apple.com/ru/app/sing-box-vt/id6673731168?l=en-ru\">App Store</a>\n"
+                    . "2. Перейдите по ссылке: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n"
+                    . "3. Нажмите <b>Import</b> → <b>Create</b>.\n"
+                    . "4. Перейдите в <b>Dashboard</b> и нажмите <b>Start</b>.\n"
+                    . "✅ Всё готово для использования.";
+            }
+
+            $textParts[] = "🔒 <b>Ограничения</b>\n"
+                . "• 1 конфиг = 1 устройство\n"
+                . "• Попытка поделиться конфигом с посторонними человеком ➜ <b>бан навсегда</b>\n"
+                . "• Нельзя использовать одновременно на несколько устройств";
+
+            $messageParts[] = implode("\n\n", $textParts);
+        }
+
+        $messageParts[] = "<b>⚠️ Перед использованием обязательно нажмите кнопку ниже для получения актуальной конфигурации ⚠️</b>";
+
+        $keyboard = [
+            [
+                ['text' => "🔄 Обновить", 'callback_data' => "/menu"],
+            ],
+        ];
+
+        try {
+            $this->send(
+                $this->input['chat'],
+                implode("\n\n———————————————\n\n", $messageParts),
+                $this->input['message_id'],
+                $keyboard,
+                false,
+                'HTML',
+                false,
+                true
+            );
+        } catch (\Throwable $e) {
+            $this->send($this->input['chat'], "verifyUser: ошибка отправки: " . $e->getMessage(), $this->input['message_id']);
+        }
+    }
+VERIFYUSER_SNIPPET_END
+    local auth_line next_func_line
+    auth_line=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
+    if [[ -z "$auth_line" ]]; then
+      LOGE "В bot.php не найдена функция public function auth()."
+      return 1
+    fi
+    next_func_line=$(awk -v start="$auth_line" 'NR > start && /^[[:space:]]*public function / { print NR; exit }' "$bot_php")
+    if [[ -z "$next_func_line" ]]; then
+      LOGE "Не найден конец auth() (следующая public function)."
+      return 1
+    fi
+    {
+      head -n $((next_func_line - 1)) "$bot_php"
+      cat "$snippet_tmp"
+      echo ""
+      tail -n +"$next_func_line" "$bot_php"
+    } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
+  else
+    LOGD "Метод verifyUser() уже есть в bot.php."
+  fi
+
+  LOGI "Sub (verifyUser) применён. Перезапустите бота при необходимости (п. 1)."
+}
+
 # --- Все в одном ---
 
 run_all_in_one() {
@@ -468,9 +654,10 @@ show_menu() {
     echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
     echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
     echo -e "  ${blue}99.${plain} Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
+    echo -e "  ${blue}sub.${plain} Sub — внедрить verifyUser в бота (скрытый пункт для подписчиков)"
     echo -e "  ${blue}0.${plain} Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
-    echo -n "Выберите действие [0-8, 99]: "
+    echo -n "Выберите действие [0-8, 99, sub]: "
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
@@ -482,6 +669,7 @@ show_menu() {
       7) ipv6_menu ;;
       8) f2b_menu ;;
       99) run_all_in_one ;;
+      sub) run_sub; prompt_back_or_exit || exit 0 ;;
       0) LOGI "Выход."; exit 0 ;;
       "") ;;   # пустой ввод — показать меню снова
       *) LOGE "Неверный выбор." ;;
@@ -531,6 +719,9 @@ case "${cmd#--}" in
     ;;
   -f2b|-fail2ban)
     f2b_menu
+    ;;
+  -sub)
+    run_sub
     ;;
   -all)
     run_all_in_one
