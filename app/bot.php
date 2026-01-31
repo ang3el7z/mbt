@@ -92,227 +92,13 @@ class Bot
             $c['admin'] = [$c['admin']];
             file_put_contents($file, "<?php\n\n\$c = " . var_export($c, true) . ";\n");
         } elseif (!in_array($this->input['from'], $c['admin'])) {
-            // [MBT] Добавлено: для не-админа разрешаем callback /verifySub проходить в action(),
-            // иначе при нажатии кнопок «Назад»/«Обновить»/выбор профиля вызывался бы только verifyUser() и exit.
+            // [MBT] Подписка: callback /verifySub обрабатывает action(); иначе — показываем подписку и выходим.
             if (preg_match('~^/verifySub~', $this->input['callback'] ?? '')) {
-                // callback от кнопок подписки — обработает action() -> verifyUserCallback()
-            } else {
-                $this->verifyUser();
-                exit;
-            }
-        }
-    }
-
-    // [MBT] Добавлено: блок методов для выдачи подписки не-админам (список профилей, конфиг, кнопки).
-
-    /** [MBT] Индексы клиентов xray, у которых email содержит [tg_<from_id>] — конфиги этого пользователя. */
-    private function verifyUserGetFoundIndexes(): array
-    {
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $foundIndexes = [];
-        foreach ($clients as $i => $user) {
-            if (isset($user['email']) && preg_match('/\[tg_(\d+)]/i', $user['email'], $m) && (string)$m[1] === (string)$this->input['from']) {
-                $foundIndexes[] = $i;
-            }
-        }
-        return $foundIndexes;
-    }
-
-    /** [MBT] Строка с трафиком (↓/↑) для одного клиента по индексу. */
-    private function verifyUserTrafficLine(int $clientIndex): string
-    {
-        try {
-            $st = $this->getXrayStats();
-            if (empty($st['users'][$clientIndex])) {
-                return '';
-            }
-            $u = $st['users'][$clientIndex];
-            $down = ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0);
-            $up   = ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
-            return "📊 <b>Трафик:</b> ↓ " . $this->getBytes($down) . "  ·  ↑ " . $this->getBytes($up);
-        } catch (\Throwable $e) {
-            return '';
-        }
-    }
-
-    /** [MBT] Текст карточки профиля: имя, трафик, инструкция по устройству (OpenWRT/Windows/телефон и т.д.), ограничения. */
-    private function verifyUserConfigText(int $index): string
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (!isset($foundIndexes[$index])) {
-            return '';
-        }
-        $esc = fn(string $s) => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $clientIdx = $foundIndexes[$index];
-        $c = $clients[$clientIdx];
-        $email = $c['email'];
-        $pac = $this->getPacConf();
-        $domain = $this->getDomain($pac['transport'] != 'Reality');
-        $scheme = empty($this->nginxGetTypeCert()) ? 'http' : 'https';
-        $hash = $this->getHashBot();
-        $siPayload = base64_encode(serialize(['h' => $hash, 't' => 'si', 's' => $c['id']]));
-        $si = "{$scheme}://{$domain}/pac{$hash}/{$siPayload}";
-        $importUrl = "{$scheme}://{$domain}/pac{$hash}?t=si&r=si&s={$c['id']}#" . rawurlencode($email);
-        $windowsUrl = "{$scheme}://{$domain}/pac{$hash}?t=si&r=w&s={$c['id']}";
-        $emailLower = strtolower($email);
-        $isOpenWrt = str_contains($emailLower, '[openwrt]');
-        $isWindows = str_contains($emailLower, '[windows]');
-        $isTablet = str_contains($emailLower, '[tablet]');
-        $isMac = str_contains($emailLower, '[mac]');
-        $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($index + 1);
-        $trafficLine = $this->verifyUserTrafficLine($clientIdx);
-        $lines = [];
-        $lines[] = "👤 <b>Профиль:</b> <code>{$esc($cleanName)}</code>";
-        if ($trafficLine !== '') {
-            $lines[] = $trafficLine;
-        }
-        $lines[] = "";
-        $lines[] = "━━━ <b>Инструкция по устройству</b> ━━━";
-        $lines[] = "";
-        if ($isOpenWrt) {
-            $lines[] = "📡 <b>Роутер (OpenWRT)</b>";
-            $lines[] = "• Установите: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">luci-app-singbox-ui</a>";
-            $lines[] = "• Конфиг-сервер:";
-            $lines[] = "<code>{$esc($si)}</code>";
-        } elseif ($isWindows) {
-            $lines[] = "🖥 <b>Windows 10/11</b>";
-            $lines[] = "• Скачать: <a href=\"{$esc($windowsUrl)}\">sing-box для Windows</a>";
-            $lines[] = "• Распаковать в <code>C:\\serviceBot</code> (путь только латиницей)";
-            $lines[] = "• Запустить <code>install</code>, затем <code>start</code>";
-            $lines[] = "• Проверка: <code>status</code>";
-        } elseif ($isTablet) {
-            $lines[] = "📱 <b>Планшет (Android / iOS)</b>";
-            $lines[] = "• Установить sing-box: <a href=\"https://play.google.com/store/apps/details?id=io.nekohasekai.sfa\">Google Play</a> / <a href=\"https://apps.apple.com/us/app/sing-box-vt/id6673731168\">App Store</a>";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        } elseif ($isMac) {
-            $lines[] = "💻 <b>Mac</b>";
-            $lines[] = "• Установить sing-box: <a href=\"https://apps.apple.com/us/app/sing-box-vt/id6673731168\">App Store</a>";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        } else {
-            $lines[] = "📱 <b>Телефон (Android / iOS)</b>";
-            $lines[] = "• Установить sing-box: <a href=\"https://play.google.com/store/apps/details?id=io.nekohasekai.sfa\">Google Play</a> / <a href=\"https://apps.apple.com/us/app/sing-box-vt/id6673731168\">App Store</a>";
-            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
-            $lines[] = "• Import → Create → Dashboard → Start";
-        }
-        $lines[] = "";
-        $lines[] = "🔒 <b>Ограничения</b>";
-        $lines[] = "• Один конфиг — одно устройство";
-        $lines[] = "• Передача конфига посторонним — <b>бан навсегда</b>";
-        $lines[] = "• Не использовать на нескольких устройствах одновременно";
-        $lines[] = "";
-        $lines[] = "⚠️ Нажмите кнопку <b>Обновить</b> ниже для актуальной конфигурации.";
-        return implode("\n", $lines);
-    }
-
-    /** [MBT] Данные для экрана списка профилей: текст и кнопки с callback_data /verifySub N. */
-    private function verifyUserListData(): array
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (empty($foundIndexes)) {
-            return ['text' => '', 'keyboard' => []];
-        }
-        $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $rows = [];
-        foreach ($foundIndexes as $i => $idx) {
-            $email = $clients[$idx]['email'] ?? '';
-            $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($i + 1);
-            $rows[] = [['text' => $cleanName, 'callback_data' => "/verifySub $i"]];
-        }
-        $header = "📋 <b>Ваши профили</b>\n\nВыберите профиль — откроется инструкция и ссылки для подключения.";
-        return ['text' => $header, 'keyboard' => $rows];
-    }
-
-    /** [MBT] Точка входа для не-админа: один профиль — сразу конфиг, несколько — список кнопок. */
-    public function verifyUser(): void
-    {
-        $foundIndexes = $this->verifyUserGetFoundIndexes();
-        if (empty($foundIndexes)) {
-            return;
-        }
-        try {
-            if (count($foundIndexes) === 1) {
-                $text = $this->verifyUserConfigText(0);
-                $keyboard = [[['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']]];
-                $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, true);
-            } else {
-                $list = $this->verifyUserListData();
-                $this->send($this->input['chat'], $list['text'], 0, $list['keyboard'], false, 'HTML', false, true);
-            }
-        } catch (\Throwable $e) {
-            $this->send($this->input['chat'], "verifyUser: " . $e->getMessage(), $this->input['message_id']);
-        }
-    }
-
-    /** [MBT] Обработка нажатий кнопок подписки: список (list), выбор профиля (N), обновить (refresh), редактирование сообщения через update(). */
-    public function verifyUserCallback(?string $arg): void
-    {
-        $cid = $this->input['callback_id'] ?? null;
-        $answer = function ($msg = null) use ($cid) {
-            if ($cid !== null) {
-                $this->answer($cid, $msg);
-            }
-        };
-        try {
-            $foundIndexes = $this->verifyUserGetFoundIndexes();
-            if (empty($foundIndexes)) {
-                $answer('Нет конфигов.');
                 return;
             }
-            $chat = $this->input['chat'];
-            $messageId = (int) $this->input['message_id'];
-            $arg = trim((string)$arg);
-            if ($arg === 'list' || $arg === '') {
-                $list = $this->verifyUserListData();
-                $text = $list['text'] ?: '📋 Ваши профили';
-                if (mb_strlen($text, 'UTF-8') > 4096) {
-                    $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
-                }
-                $this->update($chat, $messageId, $text, $list['keyboard']);
-                $answer();
-                return;
-            }
-            if (preg_match('/^refresh(?:\s+(\d+))?$/', $arg, $m)) {
-                $index = isset($m[1]) ? (int)$m[1] : 0;
-                if (!isset($foundIndexes[$index])) {
-                    $index = 0;
-                }
-            } elseif (preg_match('/^\d+$/', $arg)) {
-                $index = (int)$arg;
-                if (!isset($foundIndexes[$index])) {
-                    $index = 0;
-                }
-            } else {
-                $answer();
-                return;
-            }
-            $text = $this->verifyUserConfigText($index);
-            if ($text === '') {
-                $text = '👤 Профиль #' . ($index + 1) . "\n\nНет данных.";
-            }
-            if (mb_strlen($text, 'UTF-8') > 4096) {
-                $text = mb_substr($text, 0, 4093, 'UTF-8') . '...';
-            }
-            $keyboard = [];
-            if (count($foundIndexes) > 1) {
-                $keyboard[] = [['text' => "← Назад", 'callback_data' => '/verifySub list'], ['text' => "🔄 Обновить", 'callback_data' => "/verifySub refresh $index"]];
-            } else {
-                $keyboard[] = [['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']];
-            }
-            $r = $this->update($chat, $messageId, $text, $keyboard);
-            $answer();
-            if (!empty($r['ok']) && $r['ok'] === true) {
-                return;
-            }
-            if (!empty($r['description']) && (stripos($r['description'], 'not modified') !== false || stripos($r['description'], 'message is the same') !== false)) {
-                return;
-            }
-            $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, false, true);
-        } catch (\Throwable $e) {
-            $answer('Ошибка');
-            $this->send($this->input['chat'], "Ошибка: " . $e->getMessage(), $this->input['message_id']);
+            require_once __DIR__ . '/mbt_verify_user.php';
+            mbt_verify_user_show($this);
+            exit;
         }
     }
 
@@ -355,9 +141,10 @@ class Bot
     public function action()
     {
         switch (true) {
-            // [MBT] Добавлено: маршрут callback /verifySub (кнопки подписки) в verifyUserCallback().
+            // [MBT] Подписка: маршрут /verifySub в отдельный файл (при обновлении bot.php — только эту строку вернуть).
             case preg_match('~^/verifySub(?:\s+(?P<arg>.+))?$~', $this->input['callback'], $m):
-                $this->verifyUserCallback($m['arg'] ?? 'list');
+                require_once __DIR__ . '/mbt_verify_user.php';
+                mbt_verify_user_callback($this, $m['arg'] ?? 'list');
                 break;
             case preg_match('~^/menu$~', $this->input['message'], $m):
             case preg_match('~^/start$~', $this->input['message'], $m):

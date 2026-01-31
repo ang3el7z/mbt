@@ -13,7 +13,7 @@
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
-#   -sub                     Подменить app/bot.php на сервере файлом из репо (app/bot.php)
+#   -sub                     Копировать mbt_verify_user.php и внедрить хуки в bot.php (если их нет)
 #   -all                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)
 #   -h, --help               Справка
 # =============================================================================
@@ -64,7 +64,7 @@ usage() {
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
-  echo -e "  ${green}-sub${plain}                     Подменить app/bot.php на сервере файлом из репо (app/bot.php)"
+  echo -e "  ${green}-sub${plain}                     Копировать mbt_verify_user.php и внедрить хуки в bot.php"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
 }
@@ -409,17 +409,84 @@ f2b_menu() {
   esac
 }
 
-# --- Sub: подменить app/bot.php на сервере файлом из репо (app/bot.php) ---
+# --- Sub: копировать mbt_verify_user.php и внедрить хуки в bot.php (если их ещё нет) ---
 
 run_sub() {
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  local mbt_src="$repo_root/app/mbt_verify_user.php"
   local app_dir="$VPNBOT_DIR/app"
   local bot_php="$app_dir/bot.php"
-  if [[ ! -f "$bot_php" ]]; then
-    LOGE "Не найден файл: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
+  local mbt_dst="$app_dir/mbt_verify_user.php"
+
+  if [[ ! -f "$mbt_src" ]]; then
+    LOGE "Не найден файл в репо: $mbt_src"
     return 1
   fi
+  if [[ ! -f "$bot_php" ]]; then
+    LOGE "Не найден bot.php: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
+    return 1
+  fi
+
   mkdir -p "$app_dir"
-  LOGI "Используется bot.php: $bot_php."
+  cp "$mbt_src" "$mbt_dst" || { LOGE "Не удалось скопировать mbt_verify_user.php"; return 1; }
+  LOGI "Скопирован: mbt_verify_user.php -> $mbt_dst"
+  [[ -f "$repo_root/app/MBT_ПОСЛЕ_ОБНОВЛЕНИЯ_bot.txt" ]] && cp "$repo_root/app/MBT_ПОСЛЕ_ОБНОВЛЕНИЯ_bot.txt" "$app_dir/" && LOGI "Скопирована памятка: MBT_ПОСЛЕ_ОБНОВЛЕНИЯ_bot.txt"
+
+  if grep -q "mbt_verify_user\.php" "$bot_php"; then
+    LOGI "Правки MBT уже есть в bot.php, пропуск."
+    LOGI "Пункт 10 выполнен. Перезапустите бота при необходимости (п. 1)."
+    return 0
+  fi
+
+  # Патч 1: auth() — блок для не-админа (подписка вместо выхода)
+  local auth_patched=0
+  if grep -q 'elseif.*!in_array.*input.*from.*admin' "$bot_php"; then
+    awk '
+      /elseif[[:space:]]*\([[:space:]]*!in_array\(.*admin.*\).*\{[[:space:]]*$/ {
+        print
+        getline
+        while ($0 !~ /^\s+\}\s*$/) { getline }
+        print "            // [MBT] Подписка: callback /verifySub обрабатывает action(); иначе — показываем подписку и выходим."
+        print "            if (preg_match('\''~^/verifySub~'\'', \\$this->input['\''callback'\''] ?? '\'''\'')) {"
+        print "                return;"
+        print "            }"
+        print "            require_once __DIR__ . '\''/mbt_verify_user.php'\'';"
+        print "            mbt_verify_user_show(\\$this);"
+        print "            exit;"
+        print "        }"
+        next
+      }
+      { print }
+    ' "$bot_php" > "$bot_php.awked" 2>/dev/null && mv "$bot_php.awked" "$bot_php" && auth_patched=1
+  fi
+  if [[ "$auth_patched" -eq 1 ]]; then
+    LOGI "Правка auth() внесена."
+  else
+    LOGI "auth(): блок не-админа не найден или формат другой — внесите правку вручную (см. app/MBT_ПОСЛЕ_ОБНОВЛЕНИЯ_bot.txt)."
+  fi
+
+  # Патч 2: action() — первый case для /verifySub
+  if ! grep -q "verifySub.*mbt_verify_user_callback" "$bot_php"; then
+    local case_line
+    case_line=$(grep -n "switch (true)" "$bot_php" | head -1 | cut -d: -f1)
+    if [[ -n "$case_line" ]]; then
+      local insert_line=$((case_line + 1))
+      {
+        head -n "$case_line" "$bot_php"
+        echo "            // [MBT] Подписка: маршрут /verifySub в mbt_verify_user.php"
+        echo "            case preg_match('~^/verifySub(?:\s+(?P<arg>.+))?\$~', \$this->input['callback'], \$m):"
+        echo "                require_once __DIR__ . '/mbt_verify_user.php';"
+        echo "                mbt_verify_user_callback(\$this, \$m['arg'] ?? 'list');"
+        echo "                break;"
+        tail -n +"$insert_line" "$bot_php"
+      } > "$bot_php.new" 2>/dev/null && mv "$bot_php.new" "$bot_php" && LOGI "Правка action() (case /verifySub) внесена."
+    else
+      LOGI "action(): switch (true) не найден — внесите правку вручную (см. app/MBT_ПОСЛЕ_ОБНОВЛЕНИЯ_bot.txt)."
+    fi
+  fi
+
+  LOGI "Пункт 10 выполнен. Перезапустите бота при необходимости (п. 1)."
 }
 
 # --- Все в одном ---
@@ -483,7 +550,7 @@ show_menu() {
     echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
     echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
     echo -e "  ${blue}9.${plain}  Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
-    echo -e "  ${blue}10.${plain} Подменить app/bot.php на сервере (из репо app/bot.php)"
+    echo -e "  ${blue}10.${plain} Подписка: mbt_verify_user.php + правки в bot.php (если нет)"
     echo -e "  ${blue}0.${plain}  Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
     echo -n "Выберите действие [0-10]: "
