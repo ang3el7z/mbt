@@ -445,9 +445,7 @@ run_sub() {
     fi
   fi
 
-  if ! grep -q "function verifyUser()" "$bot_php"; then
-    LOGI "Вставляю методы verifyUser и verifyUserCallback после auth() ..."
-    cat << 'VERIFYUSER_SNIPPET_END' > "$snippet_tmp"
+  cat << 'VERIFYUSER_SNIPPET_END' > "$snippet_tmp"
     private function verifyUserGetFoundIndexes(): array
     {
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
@@ -460,6 +458,22 @@ run_sub() {
         return $foundIndexes;
     }
 
+    private function verifyUserTrafficLine(int $clientIndex): string
+    {
+        try {
+            $st = $this->getXrayStats();
+            if (empty($st['users'][$clientIndex])) {
+                return '';
+            }
+            $u = $st['users'][$clientIndex];
+            $down = ($u['global']['download'] ?? 0) + ($u['session']['download'] ?? 0);
+            $up   = ($u['global']['upload'] ?? 0) + ($u['session']['upload'] ?? 0);
+            return "📊 <b>Трафик:</b> ↓ " . $this->getBytes($down) . "  ·  ↑ " . $this->getBytes($up);
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
     private function verifyUserConfigText(int $index): string
     {
         $foundIndexes = $this->verifyUserGetFoundIndexes();
@@ -468,7 +482,8 @@ run_sub() {
         }
         $esc = fn(string $s) => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $clients = $this->getXray()['inbounds'][0]['settings']['clients'] ?? [];
-        $c = $clients[$foundIndexes[$index]];
+        $clientIdx = $foundIndexes[$index];
+        $c = $clients[$clientIdx];
         $email = $c['email'];
         $pac = $this->getPacConf();
         $domain = $this->getDomain($pac['transport'] != 'Reality');
@@ -483,22 +498,50 @@ run_sub() {
         $isWindows = str_contains($emailLower, '[windows]');
         $isTablet = str_contains($emailLower, '[tablet]');
         $isMac = str_contains($emailLower, '[mac]');
-        $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email);
-        $textParts = ["🧾 <b>Конфиг для:</b> <code>{$esc($cleanName)}</code>"];
-        if ($isOpenWrt) {
-            $textParts[] = "📡 <b>Роутер (OpenWRT)</b>\n⚠️ Только для OpenWRT.\n1. Установите интерфейс: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">GitHub</a>\n2. Используйте конфиг-сервер:\n<pre><code>{$esc($si)}</code></pre>\n✅ Подходит для ручного импорта.";
-        } elseif ($isWindows) {
-            $textParts[] = "🖥 <b>Windows</b>\n⚠️ Только для Windows 10/11.\n1. Скачайте: <a href=\"{$esc($windowsUrl)}\">sing-box для Windows</a>\n2. Распакуйте в <code>C:\\serviceBot</code> ⚠️ <i>Путь только на англ.!</i>\n3. Запустите <code>install</code>, затем <code>start</code>.\n4. Проверка: <code>status</code>\n✅ Работает автоматически.";
-        } elseif ($isTablet) {
-            $textParts[] = "📱 <b>Планшет (Android / iOS)</b>\n1. Установите sing-box (Play Store / App Store).\n2. Ссылка: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n3. Import → Create → Dashboard → Start.\n✅ Готово.";
-        } elseif ($isMac) {
-            $textParts[] = "💻 <b>Mac</b>\n1. Установите sing-box (App Store).\n2. Ссылка: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n3. Import → Create → Dashboard → Start.\n✅ Готово.";
-        } else {
-            $textParts[] = "📱 <b>Телефон (Android / iOS)</b>\n1. Установите sing-box (Play Store / App Store).\n2. Ссылка: <a href=\"{$esc($importUrl)}\">import://sing-box</a>\n3. Import → Create → Dashboard → Start.\n✅ Готово.";
+        $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($index + 1);
+        $trafficLine = $this->verifyUserTrafficLine($clientIdx);
+        $lines = [];
+        $lines[] = "👤 <b>Профиль:</b> <code>{$esc($cleanName)}</code>";
+        if ($trafficLine !== '') {
+            $lines[] = $trafficLine;
         }
-        $textParts[] = "🔒 <b>Ограничения</b>\n• 1 конфиг = 1 устройство\n• Поделиться конфигом ➜ <b>бан навсегда</b>\n• Нельзя использовать на нескольких устройствах";
-        $textParts[] = "<b>⚠️ Нажмите кнопку ниже для актуальной конфигурации ⚠️</b>";
-        return implode("\n\n", $textParts);
+        $lines[] = "";
+        $lines[] = "━━━ <b>Инструкция по устройству</b> ━━━";
+        if ($isOpenWrt) {
+            $lines[] = "📡 <b>Роутер (OpenWRT)</b>";
+            $lines[] = "• Установите: <a href=\"https://github.com/ang3el7z/luci-app-singbox-ui\">luci-app-singbox-ui</a>";
+            $lines[] = "• Конфиг-сервер:";
+            $lines[] = "<code>{$esc($si)}</code>";
+        } elseif ($isWindows) {
+            $lines[] = "🖥 <b>Windows 10/11</b>";
+            $lines[] = "• Скачать: <a href=\"{$esc($windowsUrl)}\">sing-box для Windows</a>";
+            $lines[] = "• Распаковать в <code>C:\\serviceBot</code> (путь только латиницей)";
+            $lines[] = "• Запустить <code>install</code>, затем <code>start</code>";
+            $lines[] = "• Проверка: <code>status</code>";
+        } elseif ($isTablet) {
+            $lines[] = "📱 <b>Планшет (Android / iOS)</b>";
+            $lines[] = "• Установить sing-box: Play Store / App Store";
+            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
+            $lines[] = "• Import → Create → Dashboard → Start";
+        } elseif ($isMac) {
+            $lines[] = "💻 <b>Mac</b>";
+            $lines[] = "• Установить sing-box (App Store)";
+            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
+            $lines[] = "• Import → Create → Dashboard → Start";
+        } else {
+            $lines[] = "📱 <b>Телефон (Android / iOS)</b>";
+            $lines[] = "• Установить sing-box: Play Store / App Store";
+            $lines[] = "• Импорт: <a href=\"{$esc($importUrl)}\">import://sing-box</a>";
+            $lines[] = "• Import → Create → Dashboard → Start";
+        }
+        $lines[] = "";
+        $lines[] = "🔒 <b>Ограничения</b>";
+        $lines[] = "• Один конфиг — одно устройство";
+        $lines[] = "• Передача конфига посторонним — <b>бан навсегда</b>";
+        $lines[] = "• Не использовать на нескольких устройствах одновременно";
+        $lines[] = "";
+        $lines[] = "⚠️ Нажмите кнопку <b>Обновить</b> ниже для актуальной конфигурации.";
+        return implode("\n", $lines);
     }
 
     private function verifyUserListData(): array
@@ -514,7 +557,8 @@ run_sub() {
             $cleanName = preg_replace('/^\[tg_\d+]\_?/', '', $email) ?: "Профиль " . ($i + 1);
             $rows[] = [['text' => $cleanName, 'callback_data' => "/verifySub $i"]];
         }
-        return ['text' => "📋 <b>Выберите профиль:</b>", 'keyboard' => $rows];
+        $header = "📋 <b>Ваши профили</b>\n\nВыберите профиль — откроется инструкция и ссылки для подключения.";
+        return ['text' => $header, 'keyboard' => $rows];
     }
 
     public function verifyUser(): void
@@ -525,7 +569,7 @@ run_sub() {
         }
         try {
             if (count($foundIndexes) === 1) {
-                $text = $this->verifyUserConfigText(0) . "\n\n<b>⚠️ Нажмите «Обновить» для актуальной конфигурации ⚠️</b>";
+                $text = $this->verifyUserConfigText(0);
                 $keyboard = [[['text' => "🔄 Обновить", 'callback_data' => '/verifySub refresh']]];
                 $this->send($this->input['chat'], $text, 0, $keyboard, false, 'HTML', false, true);
             } else {
@@ -566,7 +610,7 @@ run_sub() {
         } else {
             return;
         }
-        $text = $this->verifyUserConfigText($index) . "\n\n<b>⚠️ Нажмите «Обновить» для актуальной конфигурации ⚠️</b>";
+        $text = $this->verifyUserConfigText($index);
         $keyboard = [];
         if (count($foundIndexes) > 1) {
             $keyboard[] = [['text' => "← Назад", 'callback_data' => '/verifySub list'], ['text' => "🔄 Обновить", 'callback_data' => "/verifySub refresh $index"]];
@@ -577,7 +621,9 @@ run_sub() {
         $this->answer($this->input['callback_id']);
     }
 VERIFYUSER_SNIPPET_END
-    local auth_line next_func_line
+
+  if ! grep -q "function verifyUser()" "$bot_php"; then
+    LOGI "Вставляю методы verifyUser и verifyUserCallback после auth() ..."
     auth_line=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
     if [[ -z "$auth_line" ]]; then
       LOGE "В bot.php не найдена функция public function auth()."
@@ -594,8 +640,24 @@ VERIFYUSER_SNIPPET_END
       echo ""
       tail -n +"$next_func_line" "$bot_php"
     } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
+  elif ! grep -q "verifyUserCallback" "$bot_php"; then
+    LOGI "Обновляю старый блок verifyUser (кнопка Обновить будет редактировать сообщение, а не отправлять новое) ..."
+    start_line=$(grep -n "private function verifyUserGetFoundIndexes\|public function verifyUser()" "$bot_php" | head -1 | cut -d: -f1)
+    next_method_line=$(awk -v start="$start_line" 'NR > start && /^    (public|private) function / { print NR; exit }' "$bot_php")
+    if [[ -n "$start_line" && -n "$next_method_line" ]]; then
+      end_line=$((next_method_line - 1))
+      {
+        head -n $((start_line - 1)) "$bot_php"
+        cat "$snippet_tmp"
+        echo ""
+        tail -n +$((end_line + 1)) "$bot_php"
+      } > "$bot_php.new" && mv "$bot_php.new" "$bot_php"
+      LOGI "Блок verifyUser заменён на новую версию."
+    else
+      LOGE "Не удалось найти границы блока verifyUser для замены."
+    fi
   else
-    LOGD "Метод verifyUser() уже есть в bot.php."
+    LOGD "Методы verifyUser/verifyUserCallback уже есть в bot.php."
   fi
 
   LOGI "Sub (verifyUser) применён. Перезапустите бота при необходимости (п. 1)."
