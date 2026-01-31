@@ -635,6 +635,7 @@ run_sub() {
     }
 VERIFYUSER_SNIPPET_END
 
+    LOGI "Version 3 ..."
   if ! grep -q "function verifyUser()" "$bot_php"; then
     LOGI "Вставляю методы verifyUser и verifyUserCallback после auth() ..."
     auth_line=$(grep -n "public function auth()" "$bot_php" | head -1 | cut -d: -f1)
