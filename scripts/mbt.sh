@@ -412,23 +412,14 @@ f2b_menu() {
 # --- Sub: подменить app/bot.php на сервере файлом из репо (app/bot.php) ---
 
 run_sub() {
-  local repo_root
-  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-  local prepared
-  if [[ -n "${PREPARED_BOT_FILE:-}" && -f "${PREPARED_BOT_FILE}" ]]; then
-    prepared="${PREPARED_BOT_FILE}"
-  elif [[ -f "$repo_root/app/bot.php" ]]; then
-    prepared="$repo_root/app/bot.php"
-  else
-    LOGE "Не найден подготовленный файл: $repo_root/app/bot.php"
-    return 1
-  fi
   local app_dir="$VPNBOT_DIR/app"
   local bot_php="$app_dir/bot.php"
+  if [[ ! -f "$bot_php" ]]; then
+    LOGE "Не найден файл: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
+    return 1
+  fi
   mkdir -p "$app_dir"
-  LOGI "Подменяю $bot_php на $(basename "$prepared") ..."
-  cp "$prepared" "$bot_php" || { LOGE "Не удалось скопировать файл."; return 1; }
-  LOGI "bot.php подменён. Перезапустите бота при необходимости (п. 1)."
+  LOGI "Используется bot.php: $bot_php. Перезапустите бота при необходимости (п. 1)."
 }
 
 # --- Все в одном ---
