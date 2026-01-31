@@ -421,6 +421,8 @@ run_sub() {
     LOGE "Не найден bot.php: $bot_php (VPNBOT_DIR=$VPNBOT_DIR)"
     return 1
   fi
+  # Глобально отключаем превью ссылок
+  sed -i -E "s@^[[:space:]]*//[[:space:]]*'disable_web_page_preview'[[:space:]]*=>[[:space:]]*true,@                'disable_web_page_preview' => true,@" "$bot_php"
 
   mkdir -p "$app_dir"
   LOGI "Скачиваю mbt_verify_user.php: $mbt_url"
