@@ -7,9 +7,9 @@
 # С параметром:
 #   -r, -restart              Перезапуск бота (make r)
 #   -s, -swap                 Создать и включить swap (1.5 GB)
-#   -suc, -stop-unwanted-containers   Остановить ненужные Docker-контейнеры
+#   -suc [all|no-adguard], -stop-unwanted-containers   Остановить ненужные Docker-контейнеры (all = все из списка, no-adguard = все кроме adguard; без аргумента = all)
 #   -crontab-r, -crontab-reboot       Добавить в crontab автоперезапуск бота при загрузке
-#   -crontab-suc, -crontab-stop-unwanted-containers          Добавить в crontab остановку контейнеров после загрузки
+#   -crontab-suc [all|no-adguard], -crontab-stop-unwanted-containers   Добавить в crontab остановку контейнеров после загрузки (без аргумента = all)
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
@@ -36,7 +36,10 @@ SCRIPT_NAME="$(basename "$0")"
 VPNBOT_DIR="${VPNBOT_DIR:-/root/vpnbot}"
 SWAPFILE="${SWAPFILE:-/swapfile}"
 SWAPSIZE="${SWAPSIZE:-1536M}"
+# Список контейнеров для остановки (полный). Пресет no-adguard исключает adguard.
 UNWANTED_CONTAINERS="${UNWANTED_CONTAINERS:-mtproto wireguard1 shadowsocks openconnect wireguard naive hysteria proxy dnstt adguard}"
+# Пресет для -suc / -crontab-suc: all (все из списка) или no-adguard (все кроме adguard). По умолчанию all.
+SUC_PRESET="${SUC_PRESET:-all}"
 
 # ОС (для fail2ban)
 if [[ -f /etc/os-release ]]; then
@@ -58,15 +61,17 @@ usage() {
   echo "Команды:"
   echo -e "  ${green}-restart${plain}, ${green}-r${plain}              Перезапуск бота (make r)"
   echo -e "  ${green}-swap${plain}, ${green}-s${plain}              Создать и включить swap (1.5 GB)"
-  echo -e "  ${green}-stop-unwanted-containers${plain}, ${green}-suc${plain}   Остановить ненужные Docker-контейнеры"
+  echo -e "  ${green}-stop-unwanted-containers${plain}, ${green}-suc${plain} [all|no-adguard]   Остановить контейнеры по списку (all = mtproto, wireguard1, ..., adguard; no-adguard = без adguard)"
   echo -e "  ${green}-crontab-reboot${plain}, ${green}-crontab-r${plain}   Добавить в crontab автоперезапуск бота при загрузке"
-  echo -e "  ${green}-crontab-suc${plain}, ${green}-crontab-stop-unwanted-containers${plain}   Добавить в crontab остановку контейнеров после загрузки"
+  echo -e "  ${green}-crontab-suc${plain}, ${green}-crontab-stop-unwanted-containers${plain} [all|no-adguard]   Добавить в crontab остановку контейнеров после загрузки (без аргумента = all)"
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
   echo -e "  ${green}-sub${plain}                     Копировать mbt_verify_user.php и внедрить хуки в bot.php"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
+  echo ""
+  echo "Переменные: UNWANTED_CONTAINERS — список паттернов имён контейнеров; SUC_PRESET=all|no-adguard — пресет по умолчанию для -suc."
 }
 
 # Проверка root (для swap и docker)
@@ -108,10 +113,50 @@ run_swap() {
   free -m
 }
 
+# Нормализует пресет: только all или no-adguard; иначе all.
+normalize_suc_preset() {
+  local p="${1:-all}"
+  if [[ "$p" == "no-adguard" ]]; then
+    echo "no-adguard"
+  else
+    echo "all"
+  fi
+}
+
+# Возвращает список имён/паттернов для остановки по пресету (all | no-adguard).
+# Пресет all = полный UNWANTED_CONTAINERS; no-adguard = тот же список без adguard.
+get_suc_list() {
+  local preset
+  preset=$(normalize_suc_preset "${1:-$SUC_PRESET}")
+  if [[ "$preset" == "no-adguard" ]]; then
+    # Убрать adguard из списка
+    echo "$UNWANTED_CONTAINERS" | tr ' ' '\n' | grep -vFx "adguard" | tr '\n' ' ' | sed 's/ $//'
+  else
+    echo "$UNWANTED_CONTAINERS"
+  fi
+}
+
+# Человекочитаемое описание: что именно выключаем (явный список, без «с адгуардом»).
+suc_list_description() {
+  local list
+  list=$(get_suc_list "$1")
+  if [[ -z "$list" ]]; then
+    echo "пустой список"
+    return
+  fi
+  echo "$list" | tr ' ' ','
+}
+
 run_stop_containers() {
   check_root
-  LOGI "Остановка ненужных контейнеров..."
-  read -ra patterns <<< "$UNWANTED_CONTAINERS"
+  local preset
+  preset=$(normalize_suc_preset "${1:-$SUC_PRESET}")
+  local list
+  list=$(get_suc_list "$preset")
+  local desc
+  desc=$(suc_list_description "$preset")
+  LOGI "Остановка контейнеров по списку: $desc"
+  read -ra patterns <<< "$list"
   ALL_CONTAINERS=$(docker ps -a --format "{{.Names}}" 2>/dev/null) || { LOGD "Docker недоступен или контейнеров нет."; return 0; }
   for container in $ALL_CONTAINERS; do
     for pattern in "${patterns[@]}"; do
@@ -129,7 +174,25 @@ run_stop_containers() {
       fi
     done
   done
-  LOGI "Ненужные контейнеры обработаны."
+  LOGI "Контейнеры по списку обработаны."
+}
+
+# Подменю: выбор пресета и остановка контейнеров
+suc_menu_stop_containers() {
+  echo ""
+  echo -e "${green}  Остановить ненужные Docker-контейнеры${plain}"
+  echo -e "  Останавливает по списку имён (паттернам). Выберите вариант:"
+  echo -e "  ${blue}1.${plain} Все: mtproto, wireguard1, shadowsocks, openconnect, wireguard, naive, hysteria, proxy, dnstt, adguard"
+  echo -e "  ${blue}2.${plain} Все кроме adguard: mtproto, wireguard1, shadowsocks, openconnect, wireguard, naive, hysteria, proxy, dnstt"
+  echo -e "  ${blue}0.${plain} Назад"
+  echo -n "Выберите [0-2]: "
+  read -r choice
+  case "$choice" in
+    1) run_stop_containers "all"; prompt_back_or_exit || exit 0 ;;
+    2) run_stop_containers "no-adguard"; prompt_back_or_exit || exit 0 ;;
+    0) show_menu ;;
+    *) LOGE "Неверный выбор."; suc_menu_stop_containers ;;
+  esac
 }
 
 # --- Crontab: автоперезапуск бота при загрузке ---
@@ -174,19 +237,32 @@ crontab_menu_reboot_restart() {
 }
 
 # --- Crontab: остановка контейнеров после загрузки ---
-CRONTAB_REBOOT_SUC="@reboot (sleep 300 && cd $cur_dir && ./$SCRIPT_NAME -suc)"
+# Формирует строку crontab для пресета (all = все контейнеры, no-adguard = все кроме adguard).
+crontab_line_stop_containers() {
+  local preset
+  preset=$(normalize_suc_preset "${1:-all}")
+  if [[ "$preset" == "no-adguard" ]]; then
+    echo "@reboot (sleep 300 && cd $cur_dir && ./$SCRIPT_NAME -suc no-adguard)"
+  else
+    echo "@reboot (sleep 300 && cd $cur_dir && ./$SCRIPT_NAME -suc)"
+  fi
+}
 
 crontab_has_stop_containers() {
   crontab -l 2>/dev/null | grep -qF "./$SCRIPT_NAME -suc"
 }
 
 crontab_add_stop_containers() {
+  local preset
+  preset=$(normalize_suc_preset "${1:-all}")
+  local line
+  line=$(crontab_line_stop_containers "$preset")
   if crontab_has_stop_containers; then
-    LOGD "Остановка контейнеров после загрузки уже включена в crontab."
-    return 0
+    # Удалить существующую запись (любой пресет), добавить новую
+    crontab -l 2>/dev/null | grep -vF "./$SCRIPT_NAME -suc" | crontab -
   fi
-  (crontab -l 2>/dev/null; echo "$CRONTAB_REBOOT_SUC") | crontab -
-  LOGI "В crontab добавлено: $CRONTAB_REBOOT_SUC"
+  (crontab -l 2>/dev/null; echo "$line") | crontab -
+  LOGI "В crontab добавлено (пресет: $preset): $line"
 }
 
 crontab_remove_stop_containers() {
@@ -201,14 +277,16 @@ crontab_remove_stop_containers() {
 crontab_menu_stop_containers() {
   echo ""
   echo -e "${green}  Остановка контейнеров после загрузки${plain}"
-  echo -e "  ${blue}1.${plain} Включить (добавить в crontab)"
-  echo -e "  ${blue}2.${plain} Выключить (удалить из crontab)"
+  echo -e "  ${blue}1.${plain} Включить — останавливать все (mtproto, wireguard1, ..., adguard)"
+  echo -e "  ${blue}2.${plain} Включить — останавливать все кроме adguard (mtproto, ..., dnstt)"
+  echo -e "  ${blue}3.${plain} Выключить (удалить из crontab)"
   echo -e "  ${blue}0.${plain} Назад"
-  echo -n "Выберите [0-2]: "
+  echo -n "Выберите [0-3]: "
   read -r choice
   case "$choice" in
-    1) crontab_add_stop_containers; before_show_menu ;;
-    2) crontab_remove_stop_containers; before_show_menu ;;
+    1) crontab_add_stop_containers "all"; before_show_menu ;;
+    2) crontab_add_stop_containers "no-adguard"; before_show_menu ;;
+    3) crontab_remove_stop_containers; before_show_menu ;;
     0) show_menu ;;
     *) LOGE "Неверный выбор."; crontab_menu_stop_containers ;;
   esac
@@ -550,7 +628,7 @@ show_menu() {
     echo -e "${green}═══════════════════════════════════════${plain}"
     echo -e "  ${blue}1.${plain} Перезапуск бота (make r)"
     echo -e "  ${blue}2.${plain} Создать swap 1.5 GB"
-    echo -e "  ${blue}3.${plain} Остановить ненужные Docker-контейнеры"
+    echo -e "  ${blue}3.${plain} Остановить ненужные Docker-контейнеры (выбор: все / без adguard)"
     echo -e "  ${blue}4.${plain} Автоперезапуск бота при загрузке (вкл/выкл)"
     echo -e "  ${blue}5.${plain} Остановка контейнеров после загрузки (вкл/выкл)"
     echo -e "  ${blue}6.${plain} BBR (вкл/выкл)"
@@ -565,7 +643,7 @@ show_menu() {
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
       2) run_swap; prompt_back_or_exit || exit 0 ;;
-      3) run_stop_containers; prompt_back_or_exit || exit 0 ;;
+      3) suc_menu_stop_containers ;;
       4) crontab_menu_reboot_restart ;;
       5) crontab_menu_stop_containers ;;
       6) bbr_menu ;;
@@ -606,13 +684,13 @@ case "${cmd#--}" in
     run_swap
     ;;
   -suc|-stop-unwanted-containers)
-    run_stop_containers
+    run_stop_containers "${2:-all}"
     ;;
   -crontab-r|-crontab-reboot)
     crontab_add_reboot_restart
     ;;
   -crontab-suc|-crontab-stop-unwanted-containers)
-    crontab_add_stop_containers
+    crontab_add_stop_containers "${2:-all}"
     ;;
   -bbr)
     bbr_menu
