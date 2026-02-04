@@ -13,6 +13,7 @@
 #   -bbr                     Подменю BBR (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
+#   -tz, -timezone           Выбор часового пояса (TZ в override.env)
 #   -sub                     Копировать mbt_verify_user.php и внедрить хуки в bot.php (если их нет)
 #   -all                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)
 #   -h, --help               Справка
@@ -67,6 +68,7 @@ usage() {
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
+  echo -e "  ${green}-tz${plain}, ${green}-timezone${plain}           Выбор часового пояса (TZ в override.env)"
   echo -e "  ${green}-sub${plain}                     Копировать mbt_verify_user.php и внедрить хуки в bot.php"
   echo -e "  ${green}-all${plain}                     Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
   echo -e "  ${green}-h${plain}, ${green}--help${plain}               Справка"
@@ -290,6 +292,97 @@ crontab_menu_stop_containers() {
     0) show_menu ;;
     *) LOGE "Неверный выбор."; crontab_menu_stop_containers ;;
   esac
+}
+
+# --- Часовой пояс (TZ в override.env для бота) ---
+OVERRIDE_ENV="${VPNBOT_DIR}/override.env"
+
+# Список: номер => "TZ|Подпись" (российские 1–12, затем зарубежные 13–25)
+get_tz_list() {
+  cat << 'TZLIST'
+1|Europe/Kaliningrad|Калининград (UTC+2)
+2|Europe/Moscow|Москва (UTC+3)
+3|Europe/Samara|Самара (UTC+4)
+4|Europe/Volgograd|Волгоград (UTC+3)
+5|Asia/Yekaterinburg|Екатеринбург (UTC+5)
+6|Asia/Omsk|Омск (UTC+6)
+7|Asia/Krasnoyarsk|Красноярск (UTC+7)
+8|Asia/Irkutsk|Иркутск (UTC+8)
+9|Asia/Yakutsk|Якутск (UTC+9)
+10|Asia/Vladivostok|Владивосток (UTC+10)
+11|Asia/Magadan|Магадан (UTC+11)
+12|Asia/Kamchatka|Камчатка (UTC+12)
+13|UTC|UTC
+14|Europe/London|Лондон
+15|Europe/Berlin|Берлин
+16|Europe/Istanbul|Стамбул
+17|Asia/Dubai|Дубай
+18|Asia/Almaty|Алматы
+19|Asia/Tashkent|Ташкент
+20|Asia/Bangkok|Бангкок
+21|Asia/Singapore|Сингапур
+22|Asia/Shanghai|Шанхай
+23|Asia/Tokyo|Токио
+24|America/New_York|Нью-Йорк
+25|America/Los_Angeles|Лос-Анджелес
+TZLIST
+}
+
+run_set_timezone() {
+  local tz_value="$1"
+  if [[ -z "$tz_value" ]]; then
+    LOGE "Часовой пояс не указан."
+    return 1
+  fi
+  if [[ ! -d "$VPNBOT_DIR" ]]; then
+    LOGE "Каталог не найден: $VPNBOT_DIR"
+    return 1
+  fi
+  local env_file="$OVERRIDE_ENV"
+  if [[ -f "$env_file" ]]; then
+    # Удалить старую строку TZ=, если есть
+    grep -v '^TZ=' "$env_file" > "${env_file}.tmp" 2>/dev/null && mv "${env_file}.tmp" "$env_file"
+  fi
+  echo "TZ=$tz_value" >> "$env_file"
+  LOGI "В $env_file записано: TZ=$tz_value"
+  LOGI "Чтобы применить к боту, перезапустите его (п.1 меню или: make r в $VPNBOT_DIR)."
+}
+
+tz_menu() {
+  echo ""
+  echo -e "${green}  Часовой пояс (TZ для бота)${plain}"
+  echo -e "  Запись в ${blue}$OVERRIDE_ENV${plain}. Бот подхватит TZ после перезапуска."
+  echo ""
+  echo -e "  ${yellow}Россия:${plain}"
+  get_tz_list | while IFS='|' read -r num tz label; do
+    if [[ "$num" -le 12 ]]; then
+      echo -e "  ${blue}${num}.${plain} $label ($tz)"
+    fi
+  done
+  echo -e "  ${yellow}Другие:${plain}"
+  get_tz_list | while IFS='|' read -r num tz label; do
+    if [[ "$num" -ge 13 ]]; then
+      echo -e "  ${blue}${num}.${plain} $label ($tz)"
+    fi
+  done
+  echo -e "  ${blue}0.${plain} Назад"
+  echo -n "Выберите [0-25]: "
+  read -r choice
+  if [[ "$choice" == "0" ]]; then
+    show_menu
+    return
+  fi
+  local picked
+  picked=$(get_tz_list | while IFS='|' read -r num tz label; do
+    if [[ "$num" == "$choice" ]]; then echo "$tz"; break; fi
+  done)
+  if [[ -n "$picked" ]]; then
+    run_set_timezone "$picked"
+    before_show_menu
+  else
+    LOGE "Неверный выбор."
+    tz_menu
+  fi
 }
 
 # --- BBR ---
@@ -636,9 +729,10 @@ show_menu() {
     echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
     echo -e "  ${blue}9.${plain}  Все в одном (swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban)"
     echo -e "  ${blue}10.${plain} Подписка: mbt_verify_user.php + правки в bot.php (если нет)"
+    echo -e "  ${blue}11.${plain} Часовой пояс (TZ для бота)"
     echo -e "  ${blue}0.${plain}  Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
-    echo -n "Выберите действие [0-10]: "
+    echo -n "Выберите действие [0-11]: "
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
@@ -651,6 +745,7 @@ show_menu() {
       8) f2b_menu ;;
       9) run_all_in_one ;;
       10) run_sub; prompt_back_or_exit || exit 0 ;;
+      11) tz_menu ;;
       0) LOGI "Выход."; exit 0 ;;
       "") ;;   # пустой ввод — показать меню снова
       *) LOGE "Неверный выбор." ;;
@@ -703,6 +798,9 @@ case "${cmd#--}" in
     ;;
   -sub)
     run_sub
+    ;;
+  -tz|-timezone)
+    tz_menu
     ;;
   -all)
     run_all_in_one
