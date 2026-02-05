@@ -868,21 +868,23 @@ run_all_not() {
   before_show_menu
 }
 
-# Подменю «Все в одном»: включить (пресет 1 или 2) или выключить.
+# Подменю «Все в одном»: включить (пресет 1 или 2) или выключить (с выбором пресета запуска контейнеров).
 all_menu() {
   echo ""
   echo -e "${green}  Все в одном${plain}"
   echo -e "  Пресет контейнеров: 1 = с adguard, 2 = без adguard"
   echo -e "  ${blue}1.${plain} Включить — пресет 1 (контейнеры с adguard)"
   echo -e "  ${blue}2.${plain} Включить — пресет 2 (контейнеры без adguard)"
-  echo -e "  ${blue}3.${plain} Выключить (запустить контейнеры пресета 2, откат остального)"
+  echo -e "  ${blue}3.${plain} Выключить (запустить контейнеры пресета 1, откат остального)"
+  echo -e "  ${blue}4.${plain} Выключить (запустить контейнеры пресета 2, откат остального)"
   echo -e "  ${blue}0.${plain} Назад"
-  echo -n "Выберите [0-3]: "
+  echo -n "Выберите [0-4]: "
   read -r choice
   case "$choice" in
     1) run_all_in_one "all" ;;
     2) run_all_in_one "no-adguard" ;;
-    3) run_all_not "no-adguard" ;;
+    3) run_all_not "all" ;;
+    4) run_all_not "no-adguard" ;;
     0) show_menu ;;
     *) LOGE "Неверный выбор."; all_menu ;;
   esac
