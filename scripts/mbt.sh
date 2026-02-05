@@ -6,7 +6,7 @@
 #
 # С параметром:
 #   -r, -restart              Перезапуск бота (make r)
-#   -s, -swap                 Создать и включить swap (1.5 GB)
+#   -s, -swap                 Подменю Swap (вкл/выкл); без меню — создать и включить swap (1.5 GB)
 #   -suc [1|2|all|no-adguard], -stop-unwanted-containers   Остановить контейнеры (пресет 1 = с adguard, пресет 2 = без adguard; по умолчанию пресет 2)
 #   -crontab-r, -crontab-reboot       Добавить в crontab автоперезапуск бота при загрузке
 #   -crontab-suc [1|2|all|no-adguard], -crontab-stop-unwanted-containers   Добавить в crontab остановку контейнеров (по умолчанию пресет 2)
@@ -62,7 +62,7 @@ usage() {
   echo ""
   echo "Команды:"
   echo -e "  ${green}-restart${plain}, ${green}-r${plain}              Перезапуск бота (make r)"
-  echo -e "  ${green}-swap${plain}, ${green}-s${plain}              Создать и включить swap (1.5 GB)"
+  echo -e "  ${green}-swap${plain}, ${green}-s${plain}              Подменю Swap (вкл/выкл); из CLI — включить swap (1.5 GB)"
   echo -e "  ${green}-stop-unwanted-containers${plain}, ${green}-suc${plain} [1|2]   Остановить контейнеры (пресет 1 = с adguard, пресет 2 = без adguard; по умолчанию 2)"
   echo -e "  ${green}-crontab-reboot${plain}, ${green}-crontab-r${plain}   Добавить в crontab автоперезапуск бота при загрузке"
   echo -e "  ${green}-crontab-suc${plain}, ${green}-crontab-stop-unwanted-containers${plain} [1|2]   Добавить в crontab остановку контейнеров (по умолчанию пресет 2)"
@@ -128,6 +128,22 @@ run_remove_swap() {
   swapoff "$SWAPFILE"
   [[ -f /etc/fstab ]] && sed -i "\|^$SWAPFILE|d" /etc/fstab
   LOGI "Swap отключён и убран из fstab."
+}
+
+swap_menu() {
+  echo ""
+  echo -e "${green}  Swap (1.5 GB)${plain}"
+  echo -e "  ${blue}1.${plain} Включить swap (создать и активировать)"
+  echo -e "  ${blue}2.${plain} Выключить swap (отключить и убрать из fstab)"
+  echo -e "  ${blue}0.${plain} Назад в главное меню"
+  echo -n "Выберите [0-2]: "
+  read -r choice
+  case "$choice" in
+    1) run_swap; before_show_menu ;;
+    2) run_remove_swap; before_show_menu ;;
+    0) show_menu ;;
+    *) LOGE "Неверный выбор."; swap_menu ;;
+  esac
 }
 
 # Нормализует пресет: 1 или all = с adguard, 2 или no-adguard = без adguard. По умолчанию — пресет 2 (no-adguard).
@@ -783,7 +799,7 @@ show_menu() {
     echo -e "${green}                MBT                    ${plain}"
     echo -e "${green}═══════════════════════════════════════${plain}"
     echo -e "  ${blue}1.${plain} Перезапуск бота (make r)"
-    echo -e "  ${blue}2.${plain} Создать swap 1.5 GB"
+    echo -e "  ${blue}2.${plain} Swap (вкл/выкл)"
     echo -e "  ${blue}3.${plain} Остановить ненужные Docker-контейнеры (выбор: все / без adguard)"
     echo -e "  ${blue}4.${plain} Автоперезапуск бота при загрузке (вкл/выкл)"
     echo -e "  ${blue}5.${plain} Остановка контейнеров после загрузки (вкл/выкл)"
@@ -799,7 +815,7 @@ show_menu() {
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
-      2) run_swap; prompt_back_or_exit || exit 0 ;;
+      2) swap_menu ;;
       3) suc_menu_stop_containers ;;
       4) crontab_menu_reboot_restart ;;
       5) crontab_menu_stop_containers ;;
@@ -838,8 +854,12 @@ case "${cmd#--}" in
   -r|restart)
     run_restart
     ;;
-  -s|swap)
-    run_swap
+  -s|-swap)
+    if [[ -t 0 ]]; then
+      swap_menu
+    else
+      run_swap
+    fi
     ;;
   -suc|-stop-unwanted-containers)
     run_stop_containers "${2:-no-adguard}"

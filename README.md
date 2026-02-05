@@ -17,7 +17,7 @@ curl -sL https://raw.githubusercontent.com/ang3el7z/mbt/master/install | sudo ba
 | Параметр | Описание |
 |----------|----------|
 | `-r`, `-restart` | Перезапуск бота (make r) |
-| `-s`, `-swap` | Создать и включить swap (1.5 GB) |
+| `-s`, `-swap` | Подменю Swap (вкл/выкл) (1.5 GB) |
 | `-suc`, `-stop-unwanted-containers` + опционально `1` или `2` | Остановить ненужные Docker-контейнеры. Примеры: `-suc`, `-suc 1`, `-suc 2`, `-stop-unwanted-containers 1`. Пресет 1 — с adguard, 2 — без adguard; без аргумента — пресет 2 |
 | `-crontab-r`, `-crontab-reboot` | Добавить в crontab автоперезапуск бота при загрузке |
 | `-crontab-suc`, `-crontab-stop-unwanted-containers` + опционально `1` или `2` | Добавить в crontab остановку контейнеров. Примеры: `-crontab-suc`, `-crontab-suc 2`, `-crontab-stop-unwanted-containers 1`. Без аргумента — пресет 2 |
