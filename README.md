@@ -22,6 +22,7 @@ curl -sL https://raw.githubusercontent.com/ang3el7z/mbt/master/install | sudo ba
 | `-crontab-r`, `-crontab-reboot` | Добавить в crontab автоперезапуск бота при загрузке |
 | `-crontab-suc`, `-crontab-stop-unwanted-containers` + опционально `1` или `2` | Добавить в crontab остановку контейнеров. Примеры: `-crontab-suc`, `-crontab-suc 2`, `-crontab-stop-unwanted-containers 1`. Без аргумента — пресет 2 |
 | `-bbr` | Подменю BBR (вкл/выкл) |
+| `-zram` | Подменю Zram (вкл/выкл): сжатый swap в RAM (zstd, 60%, приоритет 100).
 | `-ipv6` | Подменю IPv6 (вкл/выкл) |
 | `-f2b`, `-fail2ban` | Подменю Fail2ban (защита SSH) |
 | `-tz`, `-timezone` | Выбор часового пояса (TZ в override.env для бота) |

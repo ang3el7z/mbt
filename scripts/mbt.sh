@@ -11,6 +11,7 @@
 #   -crontab-r, -crontab-reboot       Добавить в crontab автоперезапуск бота при загрузке
 #   -crontab-suc [1|2|all|no-adguard], -crontab-stop-unwanted-containers   Добавить в crontab остановку контейнеров (по умолчанию пресет 2)
 #   -bbr                     Подменю BBR (вкл/выкл)
+#   -zram                    Подменю Zram (вкл/выкл)
 #   -ipv6                    Подменю IPv6 (вкл/выкл)
 #   -f2b, -fail2ban          Подменю Fail2ban (защита SSH)
 #   -tz, -timezone           Выбор часового пояса (TZ в override.env)
@@ -67,6 +68,7 @@ usage() {
   echo -e "  ${green}-crontab-reboot${plain}, ${green}-crontab-r${plain}   Добавить в crontab автоперезапуск бота при загрузке"
   echo -e "  ${green}-crontab-suc${plain}, ${green}-crontab-stop-unwanted-containers${plain} [1|2]   Добавить в crontab остановку контейнеров (по умолчанию пресет 2)"
   echo -e "  ${green}-bbr${plain}                     Подменю BBR (вкл/выкл)"
+  echo -e "  ${green}-zram${plain}                    Подменю Zram (вкл/выкл)"
   echo -e "  ${green}-ipv6${plain}                    Подменю IPv6 (вкл/выкл)"
   echo -e "  ${green}-fail2ban${plain}, ${green}-f2b${plain}          Подменю Fail2ban (защита SSH)"
   echo -e "  ${green}-tz${plain}, ${green}-timezone${plain}           Выбор часового пояса (TZ в override.env)"
@@ -524,6 +526,73 @@ bbr_menu() {
   esac
 }
 
+# --- Zram (сжатый swap в RAM: zstd, 60%, приоритет 100) ---
+run_zram_enable() {
+  check_root
+  if systemctl is-active --quiet zramswap 2>/dev/null; then
+    LOGI "Zram уже активен."
+    [[ -z "$RUN_ALL_IN_ONE" ]] && before_show_menu
+    return 0
+  fi
+  if command -v apt-get &>/dev/null; then
+    apt-get update -qq && apt-get install -y zram-tools
+  else
+    LOGE "zram-tools устанавливается через apt (Debian/Ubuntu). Установите вручную: apt install zram-tools"
+    [[ -z "$RUN_ALL_IN_ONE" ]] && before_show_menu
+    return 1
+  fi
+  local cfg="/etc/default/zramswap"
+  if [[ -f "$cfg" ]]; then
+    sed -i 's/^ALGO=.*/ALGO=zstd/' "$cfg"
+    sed -i 's/^PERCENT=.*/PERCENT=60/' "$cfg"
+    sed -i 's/^PRIORITY=.*/PRIORITY=100/' "$cfg"
+    grep -q '^ALGO=' "$cfg" || echo 'ALGO=zstd' >> "$cfg"
+    grep -q '^PERCENT=' "$cfg" || echo 'PERCENT=60' >> "$cfg"
+    grep -q '^PRIORITY=' "$cfg" || echo 'PRIORITY=100' >> "$cfg"
+  else
+    echo 'ALGO=zstd' > "$cfg"
+    echo 'PERCENT=60' >> "$cfg"
+    echo 'PRIORITY=100' >> "$cfg"
+  fi
+  systemctl enable zramswap 2>/dev/null
+  systemctl restart zramswap 2>/dev/null
+  if systemctl is-active --quiet zramswap 2>/dev/null; then
+    LOGI "Zram включён (zstd, 60%, приоритет 100)."
+  else
+    LOGE "Не удалось запустить zramswap. Проверьте: systemctl status zramswap"
+  fi
+  [[ -z "$RUN_ALL_IN_ONE" ]] && before_show_menu
+}
+
+run_zram_disable() {
+  check_root
+  if ! systemctl is-active --quiet zramswap 2>/dev/null; then
+    LOGD "Zram не активен."
+    [[ -z "$RUN_ALL_IN_ONE" ]] && before_show_menu
+    return 0
+  fi
+  systemctl stop zramswap 2>/dev/null
+  systemctl disable zramswap 2>/dev/null
+  LOGI "Zram отключён."
+  [[ -z "$RUN_ALL_IN_ONE" ]] && before_show_menu
+}
+
+zram_menu() {
+  echo ""
+  echo -e "${green}  Zram (сжатый swap в RAM)${plain}"
+  echo -e "  ${blue}1.${plain} Включить (zstd, 60% RAM, приоритет 100)"
+  echo -e "  ${blue}2.${plain} Выключить"
+  echo -e "  ${blue}0.${plain} Назад в главное меню"
+  echo -n "Выберите [0-2]: "
+  read -r choice
+  case "$choice" in
+    1) run_zram_enable; before_show_menu ;;
+    2) run_zram_disable; before_show_menu ;;
+    0) show_menu ;;
+    *) LOGE "Неверный выбор."; zram_menu ;;
+  esac
+}
+
 # --- IPv6 (вкл/выкл) ---
 
 ipv6_disabled_now() {
@@ -743,19 +812,21 @@ run_all_in_one() {
   export RUN_ALL_IN_ONE=1
   LOGI "Все в одном (пресет контейнеров: $preset): swap, контейнеры, crontab, BBR, IPv6 выкл, Fail2ban..."
   run_swap
-  LOGI "[1/7] Swap готов."
+  LOGI "[1/8] Swap готов."
   run_stop_containers "$preset"
-  LOGI "[2/7] Контейнеры обработаны (пресет: $preset)."
+  LOGI "[2/8] Контейнеры обработаны (пресет: $preset)."
   crontab_add_reboot_restart
-  LOGI "[3/7] Автозапуск бота добавлен в crontab."
+  LOGI "[3/8] Автозапуск бота добавлен в crontab."
   crontab_add_stop_containers "$preset"
-  LOGI "[4/7] Остановка контейнеров после загрузки добавлена в crontab (пресет: $preset)."
+  LOGI "[4/8] Остановка контейнеров после загрузки добавлена в crontab (пресет: $preset)."
   enable_bbr
-  LOGI "[5/7] BBR включён."
+  LOGI "[5/8] BBR включён."
+  run_zram_enable
+  LOGI "[6/8] Zram включён."
   disable_ipv6
-  LOGI "[6/7] IPv6 отключён."
+  LOGI "[7/8] IPv6 отключён."
   install_fail2ban_ssh
-  LOGI "[7/7] Fail2ban включён."
+  LOGI "[8/8] Fail2ban включён."
   unset RUN_ALL_IN_ONE
   LOGI "Все в одном выполнено."
   before_show_menu
@@ -767,19 +838,21 @@ run_all_not() {
   local preset
   preset=$(normalize_suc_preset "${1:-no-adguard}")
   export RUN_ALL_IN_ONE=1
-  LOGI "Отмена «все в одном» (запуск контейнеров пресет $preset): контейнеры, crontab, BBR, IPv6, swap, Fail2ban..."
+  LOGI "Отмена «все в одном» (запуск контейнеров пресет $preset): контейнеры, crontab, BBR, Zram, IPv6, swap, Fail2ban..."
   run_start_containers "$preset"
-  LOGI "[1/6] Контейнеры по списку (пресет: $preset) запущены."
+  LOGI "[1/7] Контейнеры по списку (пресет: $preset) запущены."
   crontab_remove_reboot_restart
-  LOGI "[2/6] Автоперезапуск бота удалён из crontab."
+  LOGI "[2/7] Автоперезапуск бота удалён из crontab."
   crontab_remove_stop_containers
-  LOGI "[3/6] Остановка контейнеров после загрузки удалена из crontab."
+  LOGI "[3/7] Остановка контейнеров после загрузки удалена из crontab."
   disable_bbr
-  LOGI "[4/6] BBR отключён."
+  LOGI "[4/7] BBR отключён."
+  run_zram_disable
+  LOGI "[5/7] Zram отключён."
   enable_ipv6
-  LOGI "[5/6] IPv6 включён."
+  LOGI "[6/7] IPv6 включён."
   run_remove_swap
-  LOGI "[6/6] Swap отключён."
+  LOGI "[7/7] Swap отключён."
   if command -v fail2ban-client &>/dev/null; then
     if [[ "$release" == "alpine" ]]; then
       rc-service fail2ban stop 2>/dev/null; rc-update del fail2ban 2>/dev/null
@@ -848,14 +921,15 @@ show_menu() {
     echo -e "  ${blue}4.${plain} Автоперезапуск бота при загрузке (вкл/выкл)"
     echo -e "  ${blue}5.${plain} Остановка контейнеров после загрузки (вкл/выкл)"
     echo -e "  ${blue}6.${plain} BBR (вкл/выкл)"
-    echo -e "  ${blue}7.${plain} IPv6 (вкл/выкл)"
-    echo -e "  ${blue}8.${plain} Fail2ban (защита SSH)"
-    echo -e "  ${blue}9.${plain}  Все в одном (вкл/выкл)"
-    echo -e "  ${blue}10.${plain} Подписка: mbt_verify_user.php + правки в bot.php (если нет)"
-    echo -e "  ${blue}11.${plain} Часовой пояс (TZ для бота)"
+    echo -e "  ${blue}7.${plain} Zram (вкл/выкл)"
+    echo -e "  ${blue}8.${plain} IPv6 (вкл/выкл)"
+    echo -e "  ${blue}9.${plain} Fail2ban (защита SSH)"
+    echo -e "  ${blue}10.${plain} Все в одном (вкл/выкл)"
+    echo -e "  ${blue}11.${plain} Подписка: mbt_verify_user.php + правки в bot.php (если нет)"
+    echo -e "  ${blue}12.${plain} Часовой пояс (TZ для бота)"
     echo -e "  ${blue}0.${plain}  Выход"
     echo -e "${green}═══════════════════════════════════════${plain}"
-    echo -n "Выберите действие [0-11]: "
+    echo -n "Выберите действие [0-12]: "
     read -r choice
     case "$choice" in
       1) run_restart; prompt_back_or_exit || exit 0 ;;
@@ -864,11 +938,12 @@ show_menu() {
       4) crontab_menu_reboot_restart ;;
       5) crontab_menu_stop_containers ;;
       6) bbr_menu ;;
-      7) ipv6_menu ;;
-      8) f2b_menu ;;
-      9) all_menu ;;
-      10) run_sub; prompt_back_or_exit || exit 0 ;;
-      11) tz_menu ;;
+      7) zram_menu ;;
+      8) ipv6_menu ;;
+      9) f2b_menu ;;
+      10) all_menu ;;
+      11) run_sub; prompt_back_or_exit || exit 0 ;;
+      12) tz_menu ;;
       0) LOGI "Выход."; exit 0 ;;
       "") ;;   # пустой ввод — показать меню снова
       *) LOGE "Неверный выбор." ;;
@@ -916,6 +991,9 @@ case "${cmd#--}" in
     ;;
   -bbr)
     bbr_menu
+    ;;
+  -zram)
+    zram_menu
     ;;
   -ipv6)
     ipv6_menu
